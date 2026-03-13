@@ -43,6 +43,39 @@ Not implemented yet:
 - `internal/rpc/`: wire protocol, framing, and client transport
 - `docs/`: design and bootstrap documents
 
+## Install
+
+`safe-gmail` currently installs from source. There is not yet a Homebrew formula or system package.
+
+Requirements:
+
+- Go `1.25.8` or later
+- `make`
+- a standard `install` tool
+
+Recommended shared install for a two-user setup:
+
+```sh
+make build
+sudo make install PREFIX=/usr/local
+```
+
+That installs:
+
+- `/usr/local/bin/safe-gmail`
+- `/usr/local/bin/safe-gmaild`
+
+Per-user install without `sudo`:
+
+```sh
+make build
+make install PREFIX="$HOME/.local"
+```
+
+That installs into `~/.local/bin`. Make sure that directory is on your `PATH`.
+
+For this project, install the binaries to a stable absolute path before generating `systemd` or `launchd` service files. The printed service manifests should point at the installed `safe-gmaild`, not at a binary inside a git checkout.
+
 ## Example Config
 
 ```json
