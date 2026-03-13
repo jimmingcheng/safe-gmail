@@ -153,6 +153,10 @@ Recommended default patterns:
 - Linux: `/run/safe-gmail/<instance>/broker.sock`
 - macOS: `/Users/<userA>/Library/Application Support/safe-gmail/<instance>/broker.sock`
 
+Avoid user-private runtime paths such as `/run/user/<uid>/...` for cross-user Linux deployments unless you intentionally grant access to user B. A private runtime dir will usually cause `connect: permission denied` before the broker can perform peer-UID checks.
+
+Likewise on macOS, a socket under user A's private home directory is not suitable for cross-user access unless the parent directories grant user B explicit ACL traversal.
+
 The parent directory should:
 
 - be owned by user A

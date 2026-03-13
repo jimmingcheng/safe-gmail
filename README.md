@@ -76,6 +76,41 @@ That installs into `~/.local/bin`. Make sure that directory is on your `PATH`.
 
 For this project, install the binaries to a stable absolute path before generating `systemd` or `launchd` service files. The printed service manifests should point at the installed `safe-gmaild`, not at a binary inside a git checkout.
 
+## Socket Permissions
+
+In a two-user deployment, `socket_mode` only controls the socket file itself. User B also needs permission to traverse the parent directory that contains the socket.
+
+For Linux, do not put a cross-user socket under `/run/user/<uid>/...`. That directory is normally private to user A, so user B will get `connect: permission denied` before the broker can even check peer UID.
+
+Recommended Linux pattern:
+
+- create a dedicated shared parent directory
+- make user A the owner
+- grant user B access via a shared group or ACL
+- keep the socket itself at `0660`
+
+Example:
+
+```sh
+sudo groupadd --system safe-gmail
+sudo usermod -aG safe-gmail userA
+sudo usermod -aG safe-gmail userB
+sudo install -d -o userA -g safe-gmail -m 2750 /var/tmp/safe-gmail
+```
+
+Then set:
+
+```json
+{
+  "socket_path": "/var/tmp/safe-gmail/work.sock",
+  "socket_mode": "0660"
+}
+```
+
+If you change group membership, log out and back in before testing from user B.
+
+On macOS, the same rule applies: do not put a cross-user socket inside a private per-user directory unless you also grant user B ACL access to the parent directories. Prefer a shared location such as `/Users/Shared/safe-gmail` with explicit ACLs.
+
 ## Example Config
 
 ```json
@@ -83,7 +118,7 @@ For this project, install the binaries to a stable absolute path before generati
   "instance": "work",
   "account_email": "you@example.com",
   "client_uid": 501,
-  "socket_path": "/tmp/safe-gmail.sock",
+  "socket_path": "/var/tmp/safe-gmail/work.sock",
   "socket_mode": "0660",
   "max_body_bytes": 65536,
   "max_attachment_bytes": 26214400,
@@ -123,6 +158,8 @@ Auth store note:
 
 ## Bootstrap Run
 
+Before first start in a cross-user Linux setup, create the socket parent directory with the correct group or ACLs. If you let `safe-gmaild` create the parent directory inside a user-private runtime area, user B may not be able to connect at all.
+
 Log in once as the trusted broker owner:
 
 ```sh
@@ -160,13 +197,13 @@ launchctl enable gui/$(id -u)/com.safe-gmail.work
 From the allowed client UID:
 
 ```sh
-safe-gmail --socket /tmp/safe-gmail.sock system ping
-safe-gmail --socket /tmp/safe-gmail.sock system info
-safe-gmail --socket /tmp/safe-gmail.sock search newer_than:7d
-safe-gmail --socket /tmp/safe-gmail.sock thread search from:alice@example.com
-safe-gmail --socket /tmp/safe-gmail.sock get --body 18c...
-safe-gmail --socket /tmp/safe-gmail.sock thread get 18c...
-safe-gmail --socket /tmp/safe-gmail.sock attachment get --output ./report.pdf 18c... att-1
+safe-gmail --socket /var/tmp/safe-gmail/work.sock system ping
+safe-gmail --socket /var/tmp/safe-gmail/work.sock system info
+safe-gmail --socket /var/tmp/safe-gmail/work.sock search newer_than:7d
+safe-gmail --socket /var/tmp/safe-gmail/work.sock thread search from:alice@example.com
+safe-gmail --socket /var/tmp/safe-gmail/work.sock get --body 18c...
+safe-gmail --socket /var/tmp/safe-gmail/work.sock thread get 18c...
+safe-gmail --socket /var/tmp/safe-gmail/work.sock attachment get --output ./report.pdf 18c... att-1
 ```
 
 ## Docs
