@@ -4,7 +4,7 @@
 
 The trusted user runs `safe-gmaild`, owns the Gmail OAuth token, and defines the mail policy. The untrusted user runs `safe-gmail` and can only use the broker's filtered Gmail API over a local Unix socket.
 
-Today the broker supports:
+The broker gives the untrusted side a small read-only Gmail surface:
 
 - `system ping`
 - `system info`
@@ -14,7 +14,16 @@ Today the broker supports:
 - thread get
 - attachment get
 
-It does not expose Gmail settings, full Gmail API access, or direct OAuth credentials.
+Filtering is server-side and based on fixed message metadata. You can expose mail by:
+
+- exact email address allowlist
+- domain allowlist
+- Gmail label allowlist as an override
+- optional `allow_owner_sent` for everything sent by the owner account
+
+A message is visible if it has an allowed label, is owner-sent when that option is enabled, or includes at least one allowed non-owner participant. Thread results are filtered message-by-message.
+
+It does not expose Gmail settings, unrestricted Gmail API access, or direct OAuth credentials.
 
 ## Security Model
 
