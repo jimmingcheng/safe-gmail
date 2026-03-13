@@ -20,6 +20,7 @@ type Participants struct {
 // Policy defines a one-account allowlist for Gmail reads.
 type Policy struct {
 	Owner            string
+	AllowOwnerSent   bool
 	Addresses        map[string]bool
 	Domains          map[string]bool
 	Labels           map[string]bool
@@ -31,10 +32,11 @@ type file struct {
 }
 
 type gmailSection struct {
-	Owner     string   `json:"owner"`
-	Addresses []string `json:"addresses"`
-	Domains   []string `json:"domains"`
-	Labels    []string `json:"labels,omitempty"`
+	Owner          string   `json:"owner"`
+	AllowOwnerSent bool     `json:"allow_owner_sent,omitempty"`
+	Addresses      []string `json:"addresses"`
+	Domains        []string `json:"domains"`
+	Labels         []string `json:"labels,omitempty"`
 }
 
 // Load reads a policy file from disk and applies the configured owner.
@@ -67,6 +69,7 @@ func Parse(data []byte, owner string) (*Policy, error) {
 
 	p := &Policy{
 		Owner:            owner,
+		AllowOwnerSent:   raw.Gmail.AllowOwnerSent,
 		Addresses:        make(map[string]bool, len(raw.Gmail.Addresses)),
 		Domains:          make(map[string]bool, len(raw.Gmail.Domains)),
 		Labels:           make(map[string]bool, len(raw.Gmail.Labels)),
@@ -116,6 +119,9 @@ func (p *Policy) AllowsMessage(parts Participants) bool {
 	if p.HasWhitelistedLabel(parts.LabelIDs) {
 		return true
 	}
+	if p.IsOwnerSent(parts) {
+		return true
+	}
 
 	emails := make([]string, 0, 1+len(parts.To)+len(parts.Cc)+len(parts.Bcc))
 	if parts.From != "" {
@@ -140,6 +146,22 @@ func (p *Policy) AllowsMessage(parts Participants) bool {
 		}
 	}
 	return !sawNonOwner
+}
+
+// IsOwnerSent reports whether the message should be treated as owner-sent.
+func (p *Policy) IsOwnerSent(parts Participants) bool {
+	if p == nil || !p.AllowOwnerSent {
+		return false
+	}
+	if p.IsOwner(parts.From) {
+		return true
+	}
+	for _, labelID := range parts.LabelIDs {
+		if strings.EqualFold(strings.TrimSpace(labelID), "SENT") {
+			return true
+		}
+	}
+	return false
 }
 
 // IsAllowed reports whether the email address matches an allowed address or domain.

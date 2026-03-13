@@ -8,6 +8,7 @@ func TestParseNormalizesAllowlistEntries(t *testing.T) {
 	p, err := Parse([]byte(`{
   "gmail": {
     "owner": "Owner@Example.com",
+    "allow_owner_sent": true,
     "addresses": ["Alice@Example.com"],
     "domains": ["@Example.org"],
     "labels": ["VIP"]
@@ -19,6 +20,9 @@ func TestParseNormalizesAllowlistEntries(t *testing.T) {
 
 	if !p.IsOwner("owner@example.com") {
 		t.Fatal("owner address did not normalize")
+	}
+	if !p.AllowOwnerSent {
+		t.Fatal("allow_owner_sent did not parse")
 	}
 	if !p.IsAllowed("alice@example.com") {
 		t.Fatal("address allowlist did not normalize")
@@ -71,5 +75,52 @@ func TestAllowsMessageRequiresAllowedNonOwnerOrWhitelistedLabel(t *testing.T) {
 		To:   []string{"owner@example.com"},
 	}) {
 		t.Fatal("expected owner-only message to remain visible")
+	}
+}
+
+func TestAllowsMessageAllowsOwnerSentWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	p := &Policy{
+		Owner:          "owner@gmail.com",
+		AllowOwnerSent: true,
+	}
+
+	if !p.AllowsMessage(Participants{
+		From: "owner@gmail.com",
+		To:   []string{"friend@example.net"},
+	}) {
+		t.Fatal("expected owner-sent message to remain visible")
+	}
+
+	if !p.AllowsMessage(Participants{
+		From:     "alias@example.net",
+		To:       []string{"friend@example.net"},
+		LabelIDs: []string{"SENT"},
+	}) {
+		t.Fatal("expected sent-label message to remain visible")
+	}
+}
+
+func TestAllowsMessageIgnoresOwnerAddressInDomainMatches(t *testing.T) {
+	t.Parallel()
+
+	p := &Policy{
+		Owner:   "owner@gmail.com",
+		Domains: map[string]bool{"gmail.com": true},
+	}
+
+	if p.AllowsMessage(Participants{
+		From: "mallory@example.net",
+		To:   []string{"owner@gmail.com"},
+	}) {
+		t.Fatal("expected owner recipient address to not satisfy allowed gmail.com domain")
+	}
+
+	if !p.AllowsMessage(Participants{
+		From: "mallory@gmail.com",
+		To:   []string{"owner@gmail.com"},
+	}) {
+		t.Fatal("expected non-owner gmail.com sender to satisfy allowed gmail.com domain")
 	}
 }

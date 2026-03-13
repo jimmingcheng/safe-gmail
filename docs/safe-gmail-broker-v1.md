@@ -232,6 +232,7 @@ Suggested `policy.json`:
 {
   "gmail": {
     "owner": "you@example.com",
+    "allow_owner_sent": true,
     "addresses": [
       "alice@example.com",
       "bob@company.com"
@@ -253,6 +254,7 @@ Policy semantics:
 - domains are normalized and stored without leading `@`
 - labels are normalized to lowercase names for lookup
 - label allowlist is an override for message visibility
+- `allow_owner_sent` keeps messages sent by the broker-owned account visible without allowlisting the owner's own address or domain
 
 ## Auth Storage
 

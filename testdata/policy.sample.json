@@ -1,6 +1,7 @@
 {
   "gmail": {
     "owner": "you@example.com",
+    "allow_owner_sent": true,
     "addresses": [
       "alice@example.com"
     ],

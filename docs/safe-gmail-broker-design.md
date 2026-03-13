@@ -255,6 +255,7 @@ Start with a simple allowlist model:
 - allowed domains
 - optional label whitelist
 - account owner address
+- optional owner-sent visibility flag
 
 The broker enforces policy server-side for every method.
 
@@ -263,6 +264,7 @@ The broker enforces policy server-side for every method.
 A message is visible only if:
 
 - it has an explicitly allowed label, or
+- owner-sent visibility is enabled and the message was sent by the broker-owned account, or
 - at least one non-owner participant is allowed
 
 Participants should always be derived from a fixed metadata fetch that includes:

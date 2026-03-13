@@ -138,6 +138,7 @@ Example `policy.json`:
 {
   "gmail": {
     "owner": "you@example.com",
+    "allow_owner_sent": true,
     "addresses": [
       "alice@example.com"
     ],
@@ -150,6 +151,8 @@ Example `policy.json`:
   }
 }
 ```
+
+`allow_owner_sent` is optional. Set it to `true` if you want every message sent by the broker-owned account to remain visible without allowlisting your own address or domain.
 
 Auth store note:
 
