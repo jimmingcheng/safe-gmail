@@ -1,143 +1,141 @@
 # safe-gmail
 
-`safe-gmail` is a Gmail-only broker for local two-user setups.
+`safe-gmail` lets you give an untrusted local user or AI agent read-only access to a restricted slice of one Gmail account.
 
-The intended model is:
+The trusted user runs `safe-gmaild`, owns the Gmail OAuth token, and defines the mail policy. The untrusted user runs `safe-gmail` and can only use the broker's filtered Gmail API over a local Unix socket.
 
-- user A runs `safe-gmaild` and owns Gmail credentials plus policy files
-- user B runs `safe-gmail` and can only access the broker's typed Gmail API
-- the broker authenticates the caller using Unix peer credentials
+Today the broker supports:
 
-This repository is intentionally separate from `gogcli`. It may vendor small pieces of `gogcli`, but it is not a fork of the full CLI.
+- `system ping`
+- `system info`
+- message search
+- thread search
+- message get
+- thread get
+- attachment get
 
-## Current Status
+It does not expose Gmail settings, full Gmail API access, or direct OAuth credentials.
 
-This repo is in an early but functional read-only stage.
+## Security Model
 
-Currently implemented:
+This project is only useful as a security boundary if the Gmail owner and the agent run as different Unix users.
 
-- framed Unix socket transport
-- peer UID verification on Linux and macOS
-- `system.ping`
-- `system.info`
-- trusted-side config loading and validation
-- trusted-side OAuth login with broker-owned credential storage
-- broker-side policy loading and label resolution
-- `gmail.search_threads`
-- `gmail.search_messages`
-- `gmail.get_message`
-- `gmail.get_thread`
-- `gmail.get_attachment`
-- service manifest generation for `systemd --user` and `launchd`
+- The owner user runs `safe-gmaild` and owns the Gmail token, config, and policy files.
+- The agent user runs `safe-gmail` and connects to a Unix socket.
+- The broker verifies the connecting Unix UID before serving requests.
+- The policy decides which messages are visible.
 
-Not implemented yet:
+Do not treat this as a hard boundary if any of these are true:
 
-- Gmail draft/send methods
+- the agent runs as the same Unix user as the owner
+- the agent user can `sudo`
+- the agent user can run commands as the owner
+- the agent user can read or edit the owner's files, service config, or secret store
 
-## Layout
+Recommended deployment:
 
-- `cmd/safe-gmail/`: untrusted client CLI
-- `cmd/safe-gmaild/`: trusted daemon CLI
-- `internal/broker/`: socket server and peer credential checks
-- `internal/config/`: broker config loading and validation
-- `internal/rpc/`: wire protocol, framing, and client transport
-- `docs/`: design and bootstrap documents
+- owner user: a normal non-root account that owns the Gmail account
+- agent user: a separate non-sudo account used by the AI agent or automation
+- service: `systemd --user` on Ubuntu/Linux, `launchd` on macOS
 
-## Install
+## Ubuntu Quick Start
 
-`safe-gmail` currently installs from source. There is not yet a Homebrew formula or system package.
+This is the recommended setup for a real boundary on Ubuntu.
+
+Example names used below:
+
+- owner user: `mailowner`
+- agent user: `agentuser`
+- broker instance: `default`
+- Gmail account: `you@gmail.com`
+
+### 1. Install the binaries
 
 Requirements:
 
 - Go `1.25.8` or later
 - `make`
-- a standard `install` tool
-
-Recommended shared install for a two-user setup:
 
 ```sh
+git clone https://github.com/jimmingcheng/safe-gmail.git
+cd safe-gmail
 make build
 sudo make install PREFIX=/usr/local
 ```
 
-That installs:
+This installs:
 
 - `/usr/local/bin/safe-gmail`
 - `/usr/local/bin/safe-gmaild`
 
-Per-user install without `sudo`:
+### 2. Create a shared socket directory
+
+Run this once as a sudo-capable admin:
 
 ```sh
-make build
-make install PREFIX="$HOME/.local"
+sudo groupadd --system safe-gmail || true
+sudo usermod -aG safe-gmail mailowner
+sudo usermod -aG safe-gmail agentuser
+sudo install -d -o mailowner -g safe-gmail -m 2750 /var/tmp/safe-gmail
 ```
 
-That installs into `~/.local/bin`. Make sure that directory is on your `PATH`.
+Important:
 
-For this project, install the binaries to a stable absolute path before generating `systemd` or `launchd` service files. The printed service manifests should point at the installed `safe-gmaild`, not at a binary inside a git checkout.
+- log out and back in after changing group membership
+- do not put a cross-user socket under `/run/user/<uid>/...`
+- do not put a cross-user socket inside the owner's private home directory
 
-## Socket Permissions
+### 3. Create the owner config files
 
-In a two-user deployment, `socket_mode` only controls the socket file itself. User B also needs permission to traverse the parent directory that contains the socket.
+Run the rest of the setup as the owner user.
 
-For Linux, do not put a cross-user socket under `/run/user/<uid>/...`. That directory is normally private to user A, so user B will get `connect: permission denied` before the broker can even check peer UID.
-
-Recommended Linux pattern:
-
-- create a dedicated shared parent directory
-- make user A the owner
-- grant user B access via a shared group or ACL
-- keep the socket itself at `0660`
-
-Example:
+Create a config directory:
 
 ```sh
-sudo groupadd --system safe-gmail
-sudo usermod -aG safe-gmail userA
-sudo usermod -aG safe-gmail userB
-sudo install -d -o userA -g safe-gmail -m 2750 /var/tmp/safe-gmail
+mkdir -p ~/.config/safe-gmail/default
+chmod 700 ~/.config/safe-gmail ~/.config/safe-gmail/default
 ```
 
-Then set:
+Find the agent UID:
+
+```sh
+id -u agentuser
+```
+
+Save your Google OAuth client JSON as:
+
+```text
+~/.config/safe-gmail/default/oauth-client.json
+```
+
+Use a standard Google OAuth client JSON file with the Gmail API enabled. The least surprising option is a Google Cloud OAuth client for a Desktop app.
+
+Create `~/.config/safe-gmail/default/broker.json`:
 
 ```json
 {
-  "socket_path": "/var/tmp/safe-gmail/work.sock",
-  "socket_mode": "0660"
-}
-```
-
-If you change group membership, log out and back in before testing from user B.
-
-On macOS, the same rule applies: do not put a cross-user socket inside a private per-user directory unless you also grant user B ACL access to the parent directories. Prefer a shared location such as `/Users/Shared/safe-gmail` with explicit ACLs.
-
-## Example Config
-
-```json
-{
-  "instance": "work",
-  "account_email": "you@example.com",
-  "client_uid": 501,
-  "socket_path": "/var/tmp/safe-gmail/work.sock",
+  "instance": "default",
+  "account_email": "you@gmail.com",
+  "client_uid": 1001,
+  "socket_path": "/var/tmp/safe-gmail/default.sock",
   "socket_mode": "0660",
-  "max_body_bytes": 65536,
-  "max_attachment_bytes": 26214400,
-  "max_search_results": 100,
-  "oauth_client_path": "/Users/you/.config/safe-gmail/work/oauth-client.json",
-  "policy_path": "/Users/you/.config/safe-gmail/work/policy.json",
-  "state_path": "/Users/you/.local/state/safe-gmail/work/state.json",
-  "auth_store": {
-    "backend": "system"
-  }
+  "oauth_client_path": "/home/mailowner/.config/safe-gmail/default/oauth-client.json",
+  "policy_path": "/home/mailowner/.config/safe-gmail/default/policy.json"
 }
 ```
 
-Example `policy.json`:
+Replace:
+
+- `you@gmail.com` with the Gmail account the broker should use
+- `1001` with the output of `id -u agentuser`
+- `/home/mailowner/...` with the real home directory of the owner user
+
+Create `~/.config/safe-gmail/default/policy.json`:
 
 ```json
 {
   "gmail": {
-    "owner": "you@example.com",
+    "owner": "you@gmail.com",
     "allow_owner_sent": true,
     "addresses": [
       "alice@example.com"
@@ -152,68 +150,175 @@ Example `policy.json`:
 }
 ```
 
-`allow_owner_sent` is optional. Set it to `true` if you want every message sent by the broker-owned account to remain visible without allowlisting your own address or domain.
+Policy rules:
 
-Auth store note:
+- `addresses`: exact allowed correspondents
+- `domains`: allows any non-owner participant in that domain
+- `labels`: visible even if address/domain rules would otherwise block the message
+- `allow_owner_sent`: keeps copies of mail you sent visible without allowlisting your own address or domain
 
-- `auth_store.backend = "system"` uses Keychain on macOS and Secret Service on Linux
-- `auth_store.backend = "file"` uses an encrypted keyring directory and requires `SAFE_GMAIL_KEYRING_PASSWORD`
+Important:
 
-## Bootstrap Run
+- do not add your own domain just to see sent mail
+- for example, adding `gmail.com` allows inbound mail from other `@gmail.com` senders too
+- `allow_owner_sent` is the safer way to keep your sent mail visible
 
-Before first start in a cross-user Linux setup, create the socket parent directory with the correct group or ACLs. If you let `safe-gmaild` create the parent directory inside a user-private runtime area, user B may not be able to connect at all.
-
-Log in once as the trusted broker owner:
+### 4. Validate the config
 
 ```sh
-safe-gmaild auth login --config /path/to/broker.json
+safe-gmaild config validate --config ~/.config/safe-gmail/default/broker.json
 ```
 
-Start the daemon:
+### 5. Authorize Gmail once
 
 ```sh
-safe-gmaild run --config /path/to/broker.json
+safe-gmaild auth login --config ~/.config/safe-gmail/default/broker.json
 ```
 
-Print a persistent user service:
+The command prints a Google auth URL. Open it in a browser, log into the same Gmail account as `account_email`, copy the final redirect URL, and paste it back into the terminal.
+
+If you authorize the wrong Gmail account, the login fails instead of silently storing the wrong token.
+
+### 6. Install the user service
 
 ```sh
-safe-gmaild service print-systemd --config /path/to/broker.json > ~/.config/systemd/user/safe-gmaild@work.service
+mkdir -p ~/.config/systemd/user
+safe-gmaild service print-systemd \
+  --config ~/.config/safe-gmail/default/broker.json \
+  --binary /usr/local/bin/safe-gmaild \
+  > ~/.config/systemd/user/safe-gmaild@default.service
 systemctl --user daemon-reload
-systemctl --user enable --now safe-gmaild@work.service
+systemctl --user enable --now safe-gmaild@default.service
 ```
 
-If you want the broker to keep running across reboots even before you log in again on Linux, enable user lingering once:
+If you want the broker to survive reboots before you log in again:
 
 ```sh
 loginctl enable-linger "$USER"
 ```
 
-On macOS:
+### 7. Verify from the agent user
+
+Log in as the agent user and set the socket path:
 
 ```sh
-safe-gmaild service print-launchd --config /path/to/broker.json > ~/Library/LaunchAgents/com.safe-gmail.work.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.safe-gmail.work.plist
-launchctl enable gui/$(id -u)/com.safe-gmail.work
+export SAFE_GMAIL_SOCKET=/var/tmp/safe-gmail/default.sock
 ```
 
-From the allowed client UID:
+Test the connection:
 
 ```sh
-safe-gmail --socket /var/tmp/safe-gmail/work.sock system ping
-safe-gmail --socket /var/tmp/safe-gmail/work.sock system info
-safe-gmail --socket /var/tmp/safe-gmail/work.sock search newer_than:7d
-safe-gmail --socket /var/tmp/safe-gmail/work.sock thread search from:alice@example.com
-safe-gmail --socket /var/tmp/safe-gmail/work.sock get --body 18c...
-safe-gmail --socket /var/tmp/safe-gmail/work.sock thread get 18c...
-safe-gmail --socket /var/tmp/safe-gmail/work.sock attachment get --output ./report.pdf 18c... att-1
+safe-gmail system ping
+safe-gmail system info
 ```
 
-## Docs
+Try a search:
 
-The main design docs are:
+```sh
+safe-gmail search "newer_than:7d"
+safe-gmail thread search "from:alice@example.com"
+```
 
-- `docs/safe-gmail-broker-design.md`
-- `docs/safe-gmail-broker-v1.md`
-- `docs/safe-gmail-rpc-schema.md`
-- `docs/safe-gmail-repo-bootstrap.md`
+Fetch a message or thread:
+
+```sh
+safe-gmail get <message-id>
+safe-gmail get --body <message-id>
+safe-gmail thread get <thread-id>
+safe-gmail thread get --bodies <thread-id>
+safe-gmail attachment get --output ./file.bin <message-id> <attachment-id>
+```
+
+## For AI Agents
+
+The cleanest setup is to give the agent user this environment variable:
+
+```sh
+export SAFE_GMAIL_SOCKET=/var/tmp/safe-gmail/default.sock
+```
+
+For machine-readable responses, use `--json`:
+
+```sh
+safe-gmail --json system info
+safe-gmail --json search "label:vip newer_than:7d"
+safe-gmail --json get --body <message-id>
+safe-gmail --json thread get --bodies <thread-id>
+```
+
+Practical guidance for agents:
+
+- treat the broker as the only allowed Gmail interface
+- do not ask for raw Gmail OAuth tokens or browser cookies
+- prefer `--json` when another tool will parse the output
+- expect policy filtering: search results may omit messages that exist in Gmail
+
+## Updating An Existing Install
+
+On the owner machine:
+
+```sh
+cd /path/to/safe-gmail
+git pull
+make build
+sudo make install PREFIX=/usr/local
+```
+
+If you are upgrading specifically for owner-sent visibility:
+
+- add `"allow_owner_sent": true` to `policy.json`
+- remove your own domain from `domains` if you only added it to see sent mail
+
+Then restart the service:
+
+```sh
+systemctl --user restart safe-gmaild@default.service
+```
+
+Replace `default` if your instance name is different.
+
+## Common Mistakes
+
+`connect: permission denied`
+
+- the socket directory is not traversable by the agent user
+- use a shared directory like `/var/tmp/safe-gmail`
+- do not use `/run/user/<uid>/...` for cross-user access
+
+`unauthorized_peer`
+
+- the process is running as the wrong Unix user
+- `client_uid` in `broker.json` does not match the real agent UID
+
+`authorized as X, expected Y`
+
+- you logged into the wrong Gmail account during `auth login`
+- fix `account_email` or re-run login with the correct account
+
+`open keyring timed out`
+
+- Linux Secret Service is not available for the owner user
+- switch `broker.json` to `"auth_store": {"backend": "file", "file_dir": "/home/mailowner/.local/state/safe-gmail/default/keyring"}`
+- set `SAFE_GMAIL_KEYRING_PASSWORD` before running `auth login` and the service
+- keep that directory owner-only
+
+Agent user is a sudoer
+
+- the boundary is not meaningful
+- use a separate non-sudo user if you actually want protection
+
+## macOS Note
+
+The same security model applies on macOS, but use `launchd` instead of `systemd`:
+
+```sh
+mkdir -p ~/Library/LaunchAgents
+safe-gmaild service print-launchd \
+  --config ~/.config/safe-gmail/default/broker.json \
+  --binary /usr/local/bin/safe-gmaild \
+  > ~/Library/LaunchAgents/com.safe-gmail.default.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.safe-gmail.default.plist
+launchctl enable gui/$(id -u)/com.safe-gmail.default
+```
+
+If you care about the security boundary on macOS, the agent user should still be a separate non-admin user.
