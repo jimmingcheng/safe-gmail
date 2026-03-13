@@ -1,0 +1,16 @@
+{
+  "instance": "work",
+  "account_email": "you@example.com",
+  "client_uid": 501,
+  "socket_path": "/tmp/safe-gmail.sock",
+  "socket_mode": "0660",
+  "max_body_bytes": 65536,
+  "max_attachment_bytes": 26214400,
+  "max_search_results": 100,
+  "oauth_client_path": "/Users/you/.config/safe-gmail/work/oauth-client.json",
+  "policy_path": "/Users/you/.config/safe-gmail/work/policy.json",
+  "state_path": "/Users/you/.local/state/safe-gmail/work/state.json",
+  "auth_store": {
+    "backend": "system"
+  }
+}

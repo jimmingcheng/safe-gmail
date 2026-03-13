@@ -1,0 +1,14 @@
+{
+  "gmail": {
+    "owner": "you@example.com",
+    "addresses": [
+      "alice@example.com"
+    ],
+    "domains": [
+      "company.com"
+    ],
+    "labels": [
+      "vip"
+    ]
+  }
+}
