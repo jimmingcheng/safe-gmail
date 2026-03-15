@@ -33,13 +33,7 @@ func TestHandleGetMessageAuthorizesBeforeFullFetch(t *testing.T) {
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
-			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{"alice@example.com": true},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{},
-				ResolvedLabelIDs: map[string]bool{},
-			}, nil
+			return testResolvedVisibilityPolicy(), nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
 			return service, nil
@@ -69,7 +63,7 @@ func TestHandleGetMessageAuthorizesBeforeFullFetch(t *testing.T) {
 	}
 }
 
-func TestHandleGetMessageAllowsWhitelistedLabel(t *testing.T) {
+func TestHandleGetMessageAllowsVisibilityLabel(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeGmailService{
@@ -87,11 +81,8 @@ func TestHandleGetMessageAllowsWhitelistedLabel(t *testing.T) {
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
 			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{"vip": true},
-				ResolvedLabelIDs: map[string]bool{},
+				Owner:           "owner@example.com",
+				VisibilityLabel: "vip",
 			}, nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
@@ -172,38 +163,29 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 		searchPages: map[string]gmailapi.SearchMessagesResult{
 			"": {
 				Messages: []*gmail.Message{
-					{Id: "msg-hidden-1", ThreadId: "thread-hidden-1"},
-					{Id: "msg-hidden-2", ThreadId: "thread-hidden-2"},
-				},
-				NextPageToken: "page-2",
-			},
-			"page-2": {
-				Messages: []*gmail.Message{
 					{Id: "msg-1", ThreadId: "thread-1"},
 					{Id: "msg-2", ThreadId: "thread-2"},
 					{Id: "msg-3", ThreadId: "thread-3"},
 				},
-				NextPageToken: "page-3",
+				NextPageToken: "page-2",
 			},
-			"page-3": {
+			"page-2": {
 				Messages: []*gmail.Message{
 					{Id: "msg-4", ThreadId: "thread-4"},
 				},
 			},
 		},
 		metadata: map[string]*gmail.Message{
-			"msg-hidden-1": testMessage("msg-hidden-1", "thread-hidden-1", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
-			"msg-hidden-2": testMessage("msg-hidden-2", "thread-hidden-2", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
-			"msg-1":        testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
-			"msg-2":        testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
-			"msg-3":        testMessage("msg-3", "thread-3", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
-			"msg-4":        testMessage("msg-4", "thread-4", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+			"msg-2": testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+			"msg-3": testMessage("msg-3", "thread-3", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+			"msg-4": testMessage("msg-4", "thread-4", "owner@example.com", []string{"friend@example.com"}, []string{"SENT"}, "meta"),
 		},
 		full: map[string]*gmail.Message{
-			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
-			"msg-2": testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
-			"msg-3": testMessage("msg-3", "thread-3", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
-			"msg-4": testMessage("msg-4", "thread-4", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
+			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full body"),
+			"msg-2": testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full body"),
+			"msg-3": testMessage("msg-3", "thread-3", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full body"),
+			"msg-4": testMessage("msg-4", "thread-4", "owner@example.com", []string{"friend@example.com"}, []string{"SENT"}, "full body"),
 		},
 		metadataErr: map[string]error{},
 		fullErr:     map[string]error{},
@@ -211,13 +193,7 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
-			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{"alice@example.com": true},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{},
-				ResolvedLabelIDs: map[string]bool{},
-			}, nil
+			return testResolvedVisibilityPolicyWithOwnerSent(), nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
 			return service, nil
@@ -253,21 +229,24 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 	if result.NextPageToken == "" {
 		t.Fatalf("result.NextPageToken = empty, want opaque broker token")
 	}
-	cursor, err := decodeSearchPageToken(result.NextPageToken, searchPageKindMessages, "newer_than:7d")
+	cursor, err := decodeSearchPageToken(result.NextPageToken, searchPageKindMessages, "(newer_than:7d) (label:donna OR in:sent)")
 	if err != nil {
 		t.Fatalf("decodeSearchPageToken() error = %v", err)
 	}
 	if len(cursor.PendingIDs) != 1 || cursor.PendingIDs[0] != "msg-3" {
 		t.Fatalf("cursor.PendingIDs = %#v, want [msg-3]", cursor.PendingIDs)
 	}
-	if cursor.GmailPageToken != "page-3" {
-		t.Fatalf("cursor.GmailPageToken = %q, want page-3", cursor.GmailPageToken)
+	if cursor.GmailPageToken != "page-2" {
+		t.Fatalf("cursor.GmailPageToken = %q, want page-2", cursor.GmailPageToken)
 	}
-	if service.searchCalls != 2 {
-		t.Fatalf("searchCalls = %d, want 2", service.searchCalls)
+	if service.searchCalls != 1 {
+		t.Fatalf("searchCalls = %d, want 1", service.searchCalls)
 	}
-	if len(service.searchPageTokens) != 2 || service.searchPageTokens[0] != "" || service.searchPageTokens[1] != "page-2" {
-		t.Fatalf("searchPageTokens = %#v, want [\"\" \"page-2\"]", service.searchPageTokens)
+	if len(service.searchPageTokens) != 1 || service.searchPageTokens[0] != "" {
+		t.Fatalf("searchPageTokens = %#v, want [\"\"]", service.searchPageTokens)
+	}
+	if len(service.searchQueries) != 1 || service.searchQueries[0] != `(newer_than:7d) (label:donna OR in:sent)` {
+		t.Fatalf("searchQueries = %#v, want filtered query", service.searchQueries)
 	}
 	if len(service.fullCalls) != 2 || service.fullCalls[0] != "msg-1" || service.fullCalls[1] != "msg-2" {
 		t.Fatalf("fullCalls = %#v, want [msg-1 msg-2]", service.fullCalls)
@@ -298,11 +277,11 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 	if result.NextPageToken != "" {
 		t.Fatalf("result.NextPageToken next = %q, want empty", result.NextPageToken)
 	}
-	if service.searchCalls != 3 {
-		t.Fatalf("searchCalls = %d, want 3", service.searchCalls)
+	if service.searchCalls != 2 {
+		t.Fatalf("searchCalls = %d, want 2", service.searchCalls)
 	}
-	if len(service.searchPageTokens) != 3 || service.searchPageTokens[2] != "page-3" {
-		t.Fatalf("searchPageTokens = %#v, want third token page-3", service.searchPageTokens)
+	if len(service.searchPageTokens) != 2 || service.searchPageTokens[1] != "page-2" {
+		t.Fatalf("searchPageTokens = %#v, want second token page-2", service.searchPageTokens)
 	}
 	if len(service.fullCalls) != 4 || service.fullCalls[2] != "msg-3" || service.fullCalls[3] != "msg-4" {
 		t.Fatalf("fullCalls = %#v, want [msg-1 msg-2 msg-3 msg-4]", service.fullCalls)
@@ -316,34 +295,15 @@ func TestHandleSearchThreadsOmitsHiddenThreadsAndSanitizesSummary(t *testing.T) 
 		searchThreadPages: map[string]gmailapi.SearchThreadsResult{
 			"": {
 				Threads: []*gmail.Thread{
-					{Id: "thread-hidden-1"},
-					{Id: "thread-hidden-2"},
-				},
-				NextPageToken: "thread-page-2",
-			},
-			"thread-page-2": {
-				Threads: []*gmail.Thread{
 					{Id: "thread-1"},
 				},
 			},
 		},
 		threads: map[string]*gmail.Thread{
-			"thread-hidden-1": {
-				Id: "thread-hidden-1",
-				Messages: []*gmail.Message{
-					testMessageAt("msg-hidden-1", "thread-hidden-1", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "hidden snippet", 1710267600000, "Hidden Subject"),
-				},
-			},
-			"thread-hidden-2": {
-				Id: "thread-hidden-2",
-				Messages: []*gmail.Message{
-					testMessageAt("msg-hidden-2", "thread-hidden-2", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "hidden snippet", 1710354000000, "Hidden Subject"),
-				},
-			},
 			"thread-1": {
 				Id: "thread-1",
 				Messages: []*gmail.Message{
-					testMessageAt("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "visible snippet", 1710267600000, "Visible Subject"),
+					testMessageAt("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "visible snippet", 1710267600000, "Visible Subject"),
 					testMessageAt("msg-2", "thread-1", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "hidden snippet", 1710354000000, "Hidden Subject"),
 				},
 			},
@@ -363,13 +323,7 @@ func TestHandleSearchThreadsOmitsHiddenThreadsAndSanitizesSummary(t *testing.T) 
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
-			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{"alice@example.com": true},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{},
-				ResolvedLabelIDs: map[string]bool{},
-			}, nil
+			return testResolvedVisibilityPolicy(), nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
 			return service, nil
@@ -415,14 +369,17 @@ func TestHandleSearchThreadsOmitsHiddenThreadsAndSanitizesSummary(t *testing.T) 
 	if len(thread.Participants) != 2 || thread.Participants[0] != "alice@example.com" || thread.Participants[1] != "owner@example.com" {
 		t.Fatalf("thread.Participants = %#v, want filtered participants", thread.Participants)
 	}
-	if service.searchThreadCalls != 2 {
-		t.Fatalf("searchThreadCalls = %d, want 2", service.searchThreadCalls)
+	if service.searchThreadCalls != 1 {
+		t.Fatalf("searchThreadCalls = %d, want 1", service.searchThreadCalls)
 	}
-	if len(service.searchThreadPageTokens) != 2 || service.searchThreadPageTokens[0] != "" || service.searchThreadPageTokens[1] != "thread-page-2" {
-		t.Fatalf("searchThreadPageTokens = %#v, want [\"\" \"thread-page-2\"]", service.searchThreadPageTokens)
+	if len(service.searchThreadPageTokens) != 1 || service.searchThreadPageTokens[0] != "" {
+		t.Fatalf("searchThreadPageTokens = %#v, want [\"\"]", service.searchThreadPageTokens)
 	}
-	if len(service.threadCalls) != 3 || service.threadCalls[0] != "thread-hidden-1" || service.threadCalls[1] != "thread-hidden-2" || service.threadCalls[2] != "thread-1" {
-		t.Fatalf("threadCalls = %#v, want [thread-hidden-1 thread-hidden-2 thread-1]", service.threadCalls)
+	if len(service.searchThreadQueries) != 1 || service.searchThreadQueries[0] != `(in:anywhere) (label:donna)` {
+		t.Fatalf("searchThreadQueries = %#v, want filtered query", service.searchThreadQueries)
+	}
+	if len(service.threadCalls) != 1 || service.threadCalls[0] != "thread-1" {
+		t.Fatalf("threadCalls = %#v, want [thread-1]", service.threadCalls)
 	}
 }
 
@@ -434,7 +391,7 @@ func TestHandleGetThreadFiltersRestrictedMessages(t *testing.T) {
 			"thread-1": {
 				Id: "thread-1",
 				Messages: []*gmail.Message{
-					testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "visible"),
+					testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "visible"),
 					testMessage("msg-2", "thread-1", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "hidden"),
 				},
 			},
@@ -448,13 +405,7 @@ func TestHandleGetThreadFiltersRestrictedMessages(t *testing.T) {
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
-			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{"alice@example.com": true},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{},
-				ResolvedLabelIDs: map[string]bool{},
-			}, nil
+			return testResolvedVisibilityPolicy(), nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
 			return service, nil
@@ -513,13 +464,7 @@ func TestHandleGetThreadReturnsPolicyDeniedWhenNoMessagesVisible(t *testing.T) {
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
-			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{"alice@example.com": true},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{},
-				ResolvedLabelIDs: map[string]bool{},
-			}, nil
+			return testResolvedVisibilityPolicy(), nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
 			return service, nil
@@ -548,10 +493,10 @@ func TestHandleGetAttachmentReturnsContent(t *testing.T) {
 
 	service := &fakeGmailService{
 		metadata: map[string]*gmail.Message{
-			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
 		},
 		full: map[string]*gmail.Message{
-			"msg-1": testMessageWithAttachment("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full", "report.pdf", "application/pdf", "att-1", 5),
+			"msg-1": testMessageWithAttachment("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full", "report.pdf", "application/pdf", "att-1", 5),
 		},
 		attachmentData: map[string][]byte{
 			attachmentKey("msg-1", "att-1"): []byte("hello"),
@@ -564,13 +509,7 @@ func TestHandleGetAttachmentReturnsContent(t *testing.T) {
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
-			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{"alice@example.com": true},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{},
-				ResolvedLabelIDs: map[string]bool{},
-			}, nil
+			return testResolvedVisibilityPolicy(), nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
 			return service, nil
@@ -613,10 +552,10 @@ func TestHandleGetAttachmentRejectsOversizedAttachmentBeforeDownload(t *testing.
 
 	service := &fakeGmailService{
 		metadata: map[string]*gmail.Message{
-			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
 		},
 		full: map[string]*gmail.Message{
-			"msg-1": testMessageWithAttachment("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full", "archive.zip", "application/zip", "att-big", 65),
+			"msg-1": testMessageWithAttachment("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full", "archive.zip", "application/zip", "att-big", 65),
 		},
 		threadErr:      map[string]error{},
 		metadataErr:    map[string]error{},
@@ -627,13 +566,7 @@ func TestHandleGetAttachmentRejectsOversizedAttachmentBeforeDownload(t *testing.
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
 		LoadPolicy: func(string, string) (*policy.Policy, error) {
-			return &policy.Policy{
-				Owner:            "owner@example.com",
-				Addresses:        map[string]bool{"alice@example.com": true},
-				Domains:          map[string]bool{},
-				Labels:           map[string]bool{},
-				ResolvedLabelIDs: map[string]bool{},
-			}, nil
+			return testResolvedVisibilityPolicy(), nil
 		},
 		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
 			return service, nil
@@ -681,7 +614,9 @@ type fakeGmailService struct {
 	fullCalls              []string
 	threadCalls            []string
 	attachmentCalls        []string
+	searchThreadQueries    []string
 	searchThreadPageTokens []string
+	searchQueries          []string
 	searchPageTokens       []string
 	labelCalls             int
 	searchThreadCalls      int
@@ -697,8 +632,9 @@ func (f *fakeGmailService) ListLabelNameToID(context.Context) (map[string]string
 	return f.labels, f.labelErr
 }
 
-func (f *fakeGmailService) SearchThreads(_ context.Context, _ string, _ int64, pageToken string) (gmailapi.SearchThreadsResult, error) {
+func (f *fakeGmailService) SearchThreads(_ context.Context, query string, _ int64, pageToken string) (gmailapi.SearchThreadsResult, error) {
 	f.searchThreadCalls++
+	f.searchThreadQueries = append(f.searchThreadQueries, query)
 	f.searchThreadPageTokens = append(f.searchThreadPageTokens, pageToken)
 	if f.searchThreadsErr != nil {
 		return gmailapi.SearchThreadsResult{}, f.searchThreadsErr
@@ -712,8 +648,9 @@ func (f *fakeGmailService) SearchThreads(_ context.Context, _ string, _ int64, p
 	return f.searchThreadsResult, f.searchThreadsErr
 }
 
-func (f *fakeGmailService) SearchMessages(_ context.Context, _ string, _ int64, pageToken string) (gmailapi.SearchMessagesResult, error) {
+func (f *fakeGmailService) SearchMessages(_ context.Context, query string, _ int64, pageToken string) (gmailapi.SearchMessagesResult, error) {
 	f.searchCalls++
+	f.searchQueries = append(f.searchQueries, query)
 	f.searchPageTokens = append(f.searchPageTokens, pageToken)
 	if f.searchErr != nil {
 		return gmailapi.SearchMessagesResult{}, f.searchErr
@@ -772,6 +709,20 @@ func testConfig() config.Config {
 		OAuthClientPath:    "/tmp/oauth-client.json",
 		PolicyPath:         "/tmp/policy.json",
 	}
+}
+
+func testResolvedVisibilityPolicy() *policy.Policy {
+	return &policy.Policy{
+		Owner:             "owner@example.com",
+		VisibilityLabel:   "donna",
+		VisibilityLabelID: "Label_1",
+	}
+}
+
+func testResolvedVisibilityPolicyWithOwnerSent() *policy.Policy {
+	p := testResolvedVisibilityPolicy()
+	p.AllowOwnerSent = true
+	return p
 }
 
 func testMessage(id, threadID, from string, to []string, labels []string, body string) *gmail.Message {

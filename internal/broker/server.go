@@ -224,10 +224,17 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 	if errResp != nil {
 		return *errResp
 	}
+	if !rt.hasVisibleSearchScope() {
+		return rpc.NewSuccess(req.ID, rpc.GmailSearchThreadsResult{
+			Threads:       []rpc.ThreadSummary{},
+			NextPageToken: "",
+		})
+	}
 
 	limit := normalizeSearchLimit(params.Limit, s.cfg.MaxSearchResults)
 	batchSize := searchBatchSize(limit, s.cfg.MaxSearchResults)
-	cursor, err := decodeSearchPageToken(params.PageToken, searchPageKindThreads, params.Query)
+	effectiveQuery := rt.searchQuery(params.Query)
+	cursor, err := decodeSearchPageToken(params.PageToken, searchPageKindThreads, effectiveQuery)
 	if err != nil {
 		return rpc.NewError(req.ID, "invalid_params", err.Error(), false)
 	}
@@ -238,7 +245,7 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 	for len(threads) < limit {
 		if len(pendingIDs) == 0 {
 			currentPageToken := gmailPageToken
-			page, err := rt.client.SearchThreads(ctx, params.Query, int64(batchSize), currentPageToken)
+			page, err := rt.client.SearchThreads(ctx, effectiveQuery, int64(batchSize), currentPageToken)
 			if err != nil {
 				return mapGmailError(req.ID, err)
 			}
@@ -276,7 +283,7 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 
 	nextPageToken, err := encodeSearchPageToken(searchPageCursor{
 		Kind:           searchPageKindThreads,
-		Query:          params.Query,
+		Query:          effectiveQuery,
 		PendingIDs:     pendingIDs,
 		GmailPageToken: gmailPageToken,
 	})
@@ -344,10 +351,23 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 	if errResp != nil {
 		return *errResp
 	}
+	if !rt.hasVisibleSearchScope() {
+		if params.IncludeBody {
+			return rpc.NewSuccess(req.ID, rpc.GmailSearchMessagesResultDetail{
+				Messages:      []rpc.MessageDetail{},
+				NextPageToken: "",
+			})
+		}
+		return rpc.NewSuccess(req.ID, rpc.GmailSearchMessagesResultSummary{
+			Messages:      []rpc.MessageSummary{},
+			NextPageToken: "",
+		})
+	}
 
 	limit := normalizeSearchLimit(params.Limit, s.cfg.MaxSearchResults)
 	batchSize := searchBatchSize(limit, s.cfg.MaxSearchResults)
-	cursor, err := decodeSearchPageToken(params.PageToken, searchPageKindMessages, params.Query)
+	effectiveQuery := rt.searchQuery(params.Query)
+	cursor, err := decodeSearchPageToken(params.PageToken, searchPageKindMessages, effectiveQuery)
 	if err != nil {
 		return rpc.NewError(req.ID, "invalid_params", err.Error(), false)
 	}
@@ -358,7 +378,7 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 	for len(visibleMessages) < limit {
 		if len(pendingIDs) == 0 {
 			currentPageToken := gmailPageToken
-			page, err := rt.client.SearchMessages(ctx, params.Query, int64(batchSize), currentPageToken)
+			page, err := rt.client.SearchMessages(ctx, effectiveQuery, int64(batchSize), currentPageToken)
 			if err != nil {
 				return mapGmailError(req.ID, err)
 			}
@@ -391,7 +411,7 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 
 	nextPageToken, err := encodeSearchPageToken(searchPageCursor{
 		Kind:           searchPageKindMessages,
-		Query:          params.Query,
+		Query:          effectiveQuery,
 		PendingIDs:     pendingIDs,
 		GmailPageToken: gmailPageToken,
 	})
@@ -568,13 +588,16 @@ func (s *Server) openGmailRuntime(ctx context.Context, id string) (*gmailRuntime
 		}
 	}
 
-	if pol != nil && len(pol.Labels) > 0 {
+	if pol != nil && strings.TrimSpace(pol.VisibilityLabel) != "" && strings.TrimSpace(pol.VisibilityLabelID) == "" {
 		labelMap, err := client.ListLabelNameToID(ctx)
 		if err != nil {
 			resp := mapGmailError(id, err)
 			return nil, &resp
 		}
-		pol.ResolveLabelNames(labelMap)
+		if err := pol.ResolveVisibilityLabel(labelMap); err != nil {
+			resp := rpc.NewError(id, "internal_error", err.Error(), false)
+			return nil, &resp
+		}
 	}
 
 	return &gmailRuntime{
@@ -602,6 +625,44 @@ func (r *gmailRuntime) visibleThreadMessages(thread *gmail.Thread) []*gmail.Mess
 		}
 	}
 	return visible
+}
+
+func (r *gmailRuntime) hasVisibleSearchScope() bool {
+	if r == nil || r.policy == nil {
+		return true
+	}
+	return strings.TrimSpace(r.policy.VisibilityLabel) != "" || r.policy.AllowOwnerSent
+}
+
+func (r *gmailRuntime) searchQuery(userQuery string) string {
+	userQuery = strings.TrimSpace(userQuery)
+	if r == nil || r.policy == nil {
+		return userQuery
+	}
+
+	clauses := make([]string, 0, 2)
+	if clause := visibilityLabelSearchClause(r.policy.VisibilityLabel); clause != "" {
+		clauses = append(clauses, clause)
+	}
+	if r.policy.AllowOwnerSent {
+		clauses = append(clauses, "in:sent")
+	}
+
+	switch len(clauses) {
+	case 0:
+		return userQuery
+	case 1:
+		if userQuery == "" {
+			return clauses[0]
+		}
+		return "(" + userQuery + ") (" + clauses[0] + ")"
+	default:
+		policyQuery := "(" + strings.Join(clauses, " OR ") + ")"
+		if userQuery == "" {
+			return policyQuery
+		}
+		return "(" + userQuery + ") " + policyQuery
+	}
 }
 
 func normalizeSearchLimit(limit, max int) int {
@@ -654,6 +715,33 @@ func extractMessageIDs(messages []*gmail.Message) []string {
 		ids = append(ids, message.Id)
 	}
 	return ids
+}
+
+func visibilityLabelSearchClause(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	if isSimpleLabelQueryValue(label) {
+		return "label:" + label
+	}
+	escaped := strings.ReplaceAll(label, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	return `label:"` + escaped + `"`
+}
+
+func isSimpleLabelQueryValue(value string) bool {
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '/', r == '.':
+		default:
+			return false
+		}
+	}
+	return value != ""
 }
 
 func decodeSearchPageToken(raw, kind, query string) (searchPageCursor, error) {

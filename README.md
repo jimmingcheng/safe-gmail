@@ -16,12 +16,10 @@ The broker gives the untrusted side a small read-only Gmail surface:
 
 Filtering is server-side and based on fixed message metadata. You can expose mail by:
 
-- exact email address allowlist
-- domain allowlist
-- Gmail label allowlist as an override
+- one configured Gmail visibility label
 - optional `allow_owner_sent` for everything sent by the owner account
 
-A message is visible if it has an allowed label, is owner-sent when that option is enabled, or includes at least one allowed non-owner participant. Thread results are filtered message-by-message.
+A message is visible if it has the configured visibility label, or if it is owner-sent when that option is enabled. Thread results are filtered message-by-message.
 
 It does not expose Gmail settings, unrestricted Gmail API access, or direct OAuth credentials.
 
@@ -146,30 +144,21 @@ Create `~/.config/safe-gmail/default/policy.json`:
   "gmail": {
     "owner": "you@gmail.com",
     "allow_owner_sent": true,
-    "addresses": [
-      "alice@example.com"
-    ],
-    "domains": [
-      "company.com"
-    ],
-    "labels": [
-      "vip"
-    ]
+    "visibility_label": "safe-gmail-visible"
   }
 }
 ```
 
 Policy rules:
 
-- `addresses`: exact allowed correspondents
-- `domains`: allows any non-owner participant in that domain
-- `labels`: visible even if address/domain rules would otherwise block the message
-- `allow_owner_sent`: keeps copies of mail you sent visible without allowlisting your own address or domain
+- `visibility_label`: the Gmail label that marks messages as safe to expose through the broker
+- `allow_owner_sent`: keeps copies of mail you sent visible without requiring the visibility label
 
 Important:
 
-- do not add your own domain just to see sent mail
-- for example, adding `gmail.com` allows inbound mail from other `@gmail.com` senders too
+- `visibility_label` is a normal Gmail label name, so values like `safe-gmail-visible`, `donna`, or `Kids/School` are valid
+- apply the visibility label to every message you want the broker to expose, typically with Gmail filters
+- other Gmail labels can still exist for your own organization, but the broker only treats `visibility_label` as the safety gate
 - `allow_owner_sent` is the safer way to keep your sent mail visible
 
 ### 4. Validate the config
@@ -275,8 +264,9 @@ sudo make install PREFIX=/usr/local
 
 If you are upgrading specifically for owner-sent visibility:
 
-- add `"allow_owner_sent": true` to `policy.json`
-- remove your own domain from `domains` if you only added it to see sent mail
+- replace legacy `addresses`, `domains`, and `labels` policy entries with `"visibility_label": "safe-gmail-visible"` or another Gmail label name you control
+- add `"allow_owner_sent": true` to `policy.json` if you want sent mail visible without the visibility label
+- create or update Gmail filters so the visibility label is applied to all mail you want exposed
 
 Then restart the service:
 
