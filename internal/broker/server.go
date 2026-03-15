@@ -36,6 +36,7 @@ type searchPageCursor struct {
 	Kind           string   `json:"kind"`
 	Query          string   `json:"query"`
 	PendingIDs     []string `json:"pending_ids,omitempty"`
+	ReturnedIDs    []string `json:"returned_ids,omitempty"`
 	GmailPageToken string   `json:"gmail_page_token,omitempty"`
 }
 
@@ -240,6 +241,9 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 	}
 
 	pendingIDs := append([]string(nil), cursor.PendingIDs...)
+	returnedIDs := append([]string(nil), cursor.ReturnedIDs...)
+	returnedSet := makeIDSet(returnedIDs)
+	pendingIDs = uniqueIDsExcluding(pendingIDs, returnedSet)
 	gmailPageToken := cursor.GmailPageToken
 	threads := make([]rpc.ThreadSummary, 0, limit)
 	for len(threads) < limit {
@@ -254,7 +258,7 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 				gmailPageToken = ""
 				break
 			}
-			pendingIDs = extractThreadIDs(page.Threads)
+			pendingIDs = uniqueIDsExcluding(extractThreadIDs(page.Threads), returnedSet)
 			gmailPageToken = nextPageToken
 			if len(pendingIDs) == 0 {
 				if strings.TrimSpace(gmailPageToken) == "" || strings.TrimSpace(gmailPageToken) == strings.TrimSpace(currentPageToken) {
@@ -268,6 +272,9 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 		threadID := pendingIDs[0]
 		pendingIDs = pendingIDs[1:]
 		if strings.TrimSpace(threadID) == "" {
+			continue
+		}
+		if _, seen := returnedSet[threadID]; seen {
 			continue
 		}
 
@@ -284,12 +291,15 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 			return rpc.NewError(req.ID, "internal_error", "failed to shape thread summary", false)
 		}
 		threads = append(threads, summary)
+		returnedSet[threadID] = struct{}{}
+		returnedIDs = append(returnedIDs, threadID)
 	}
 
 	nextPageToken, err := encodeSearchPageToken(searchPageCursor{
 		Kind:           searchPageKindThreads,
 		Query:          effectiveQuery,
 		PendingIDs:     pendingIDs,
+		ReturnedIDs:    returnedIDs,
 		GmailPageToken: gmailPageToken,
 	})
 	if err != nil {
@@ -378,6 +388,9 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 	}
 
 	pendingIDs := append([]string(nil), cursor.PendingIDs...)
+	returnedIDs := append([]string(nil), cursor.ReturnedIDs...)
+	returnedSet := makeIDSet(returnedIDs)
+	pendingIDs = uniqueIDsExcluding(pendingIDs, returnedSet)
 	gmailPageToken := cursor.GmailPageToken
 	visibleMessages := make([]*gmail.Message, 0, limit)
 	for len(visibleMessages) < limit {
@@ -392,7 +405,7 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 				gmailPageToken = ""
 				break
 			}
-			pendingIDs = extractMessageIDs(page.Messages)
+			pendingIDs = uniqueIDsExcluding(extractMessageIDs(page.Messages), returnedSet)
 			gmailPageToken = nextPageToken
 			if len(pendingIDs) == 0 {
 				if strings.TrimSpace(gmailPageToken) == "" || strings.TrimSpace(gmailPageToken) == strings.TrimSpace(currentPageToken) {
@@ -408,6 +421,9 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 		if strings.TrimSpace(messageID) == "" {
 			continue
 		}
+		if _, seen := returnedSet[messageID]; seen {
+			continue
+		}
 
 		meta, err := rt.client.GetMessageMetadata(ctx, messageID)
 		if err != nil {
@@ -417,12 +433,15 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 			continue
 		}
 		visibleMessages = append(visibleMessages, meta)
+		returnedSet[messageID] = struct{}{}
+		returnedIDs = append(returnedIDs, messageID)
 	}
 
 	nextPageToken, err := encodeSearchPageToken(searchPageCursor{
 		Kind:           searchPageKindMessages,
 		Query:          effectiveQuery,
 		PendingIDs:     pendingIDs,
+		ReturnedIDs:    returnedIDs,
 		GmailPageToken: gmailPageToken,
 	})
 	if err != nil {
@@ -725,6 +744,41 @@ func extractMessageIDs(messages []*gmail.Message) []string {
 		ids = append(ids, message.Id)
 	}
 	return ids
+}
+
+func makeIDSet(ids []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		set[id] = struct{}{}
+	}
+	return set
+}
+
+func uniqueIDsExcluding(ids []string, excluded map[string]struct{}) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(excluded)+len(ids))
+	for id := range excluded {
+		seen[id] = struct{}{}
+	}
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 func visibilityLabelSearchClause(label string) string {
