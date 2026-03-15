@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -168,19 +169,41 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 	t.Parallel()
 
 	service := &fakeGmailService{
-		searchResult: gmailapi.SearchMessagesResult{
-			Messages: []*gmail.Message{
-				{Id: "msg-1", ThreadId: "thread-1"},
-				{Id: "msg-2", ThreadId: "thread-2"},
+		searchPages: map[string]gmailapi.SearchMessagesResult{
+			"": {
+				Messages: []*gmail.Message{
+					{Id: "msg-hidden-1", ThreadId: "thread-hidden-1"},
+					{Id: "msg-hidden-2", ThreadId: "thread-hidden-2"},
+				},
+				NextPageToken: "page-2",
 			},
-			NextPageToken: "next-token",
+			"page-2": {
+				Messages: []*gmail.Message{
+					{Id: "msg-1", ThreadId: "thread-1"},
+					{Id: "msg-2", ThreadId: "thread-2"},
+					{Id: "msg-3", ThreadId: "thread-3"},
+				},
+				NextPageToken: "page-3",
+			},
+			"page-3": {
+				Messages: []*gmail.Message{
+					{Id: "msg-4", ThreadId: "thread-4"},
+				},
+			},
 		},
 		metadata: map[string]*gmail.Message{
-			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
-			"msg-2": testMessage("msg-2", "thread-2", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-hidden-1": testMessage("msg-hidden-1", "thread-hidden-1", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-hidden-2": testMessage("msg-hidden-2", "thread-hidden-2", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-1":        testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-2":        testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-3":        testMessage("msg-3", "thread-3", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
+			"msg-4":        testMessage("msg-4", "thread-4", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "meta"),
 		},
 		full: map[string]*gmail.Message{
 			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
+			"msg-2": testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
+			"msg-3": testMessage("msg-3", "thread-3", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
+			"msg-4": testMessage("msg-4", "thread-4", "alice@example.com", []string{"owner@example.com"}, []string{"INBOX"}, "full body"),
 		},
 		metadataErr: map[string]error{},
 		fullErr:     map[string]error{},
@@ -208,7 +231,7 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 		V:      rpc.Version1,
 		ID:     "req-search",
 		Method: rpc.MethodGmailSearchMessages,
-		Params: []byte(`{"query":"newer_than:7d","include_body":true}`),
+		Params: []byte(`{"query":"newer_than:7d","include_body":true,"limit":2}`),
 	})
 	if !resp.OK {
 		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
@@ -218,20 +241,71 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 	if err := decodeResult(resp.Result, &result); err != nil {
 		t.Fatalf("decodeResult() error = %v", err)
 	}
-	if len(result.Messages) != 1 {
-		t.Fatalf("len(result.Messages) = %d, want 1", len(result.Messages))
+	if len(result.Messages) != 2 {
+		t.Fatalf("len(result.Messages) = %d, want 2", len(result.Messages))
 	}
 	if result.Messages[0].MessageID != "msg-1" {
 		t.Fatalf("result.Messages[0].MessageID = %q, want msg-1", result.Messages[0].MessageID)
 	}
-	if result.NextPageToken != "next-token" {
-		t.Fatalf("result.NextPageToken = %q, want next-token", result.NextPageToken)
+	if result.Messages[1].MessageID != "msg-2" {
+		t.Fatalf("result.Messages[1].MessageID = %q, want msg-2", result.Messages[1].MessageID)
 	}
-	if service.searchCalls != 1 {
-		t.Fatalf("searchCalls = %d, want 1", service.searchCalls)
+	if result.NextPageToken == "" {
+		t.Fatalf("result.NextPageToken = empty, want opaque broker token")
 	}
-	if len(service.fullCalls) != 1 || service.fullCalls[0] != "msg-1" {
-		t.Fatalf("fullCalls = %#v, want [msg-1]", service.fullCalls)
+	cursor, err := decodeSearchPageToken(result.NextPageToken, searchPageKindMessages, "newer_than:7d")
+	if err != nil {
+		t.Fatalf("decodeSearchPageToken() error = %v", err)
+	}
+	if len(cursor.PendingIDs) != 1 || cursor.PendingIDs[0] != "msg-3" {
+		t.Fatalf("cursor.PendingIDs = %#v, want [msg-3]", cursor.PendingIDs)
+	}
+	if cursor.GmailPageToken != "page-3" {
+		t.Fatalf("cursor.GmailPageToken = %q, want page-3", cursor.GmailPageToken)
+	}
+	if service.searchCalls != 2 {
+		t.Fatalf("searchCalls = %d, want 2", service.searchCalls)
+	}
+	if len(service.searchPageTokens) != 2 || service.searchPageTokens[0] != "" || service.searchPageTokens[1] != "page-2" {
+		t.Fatalf("searchPageTokens = %#v, want [\"\" \"page-2\"]", service.searchPageTokens)
+	}
+	if len(service.fullCalls) != 2 || service.fullCalls[0] != "msg-1" || service.fullCalls[1] != "msg-2" {
+		t.Fatalf("fullCalls = %#v, want [msg-1 msg-2]", service.fullCalls)
+	}
+
+	resp = srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-search-next",
+		Method: rpc.MethodGmailSearchMessages,
+		Params: []byte(fmt.Sprintf(`{"query":"newer_than:7d","include_body":true,"limit":2,"page_token":%q}`, result.NextPageToken)),
+	})
+	if !resp.OK {
+		t.Fatalf("dispatch(next) ok = false, want true: %#v", resp.Error)
+	}
+
+	if err := decodeResult(resp.Result, &result); err != nil {
+		t.Fatalf("decodeResult(next) error = %v", err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("len(result.Messages next) = %d, want 2", len(result.Messages))
+	}
+	if result.Messages[0].MessageID != "msg-3" {
+		t.Fatalf("result.Messages[0].MessageID next = %q, want msg-3", result.Messages[0].MessageID)
+	}
+	if result.Messages[1].MessageID != "msg-4" {
+		t.Fatalf("result.Messages[1].MessageID next = %q, want msg-4", result.Messages[1].MessageID)
+	}
+	if result.NextPageToken != "" {
+		t.Fatalf("result.NextPageToken next = %q, want empty", result.NextPageToken)
+	}
+	if service.searchCalls != 3 {
+		t.Fatalf("searchCalls = %d, want 3", service.searchCalls)
+	}
+	if len(service.searchPageTokens) != 3 || service.searchPageTokens[2] != "page-3" {
+		t.Fatalf("searchPageTokens = %#v, want third token page-3", service.searchPageTokens)
+	}
+	if len(service.fullCalls) != 4 || service.fullCalls[2] != "msg-3" || service.fullCalls[3] != "msg-4" {
+		t.Fatalf("fullCalls = %#v, want [msg-1 msg-2 msg-3 msg-4]", service.fullCalls)
 	}
 }
 
@@ -239,14 +313,33 @@ func TestHandleSearchThreadsOmitsHiddenThreadsAndSanitizesSummary(t *testing.T) 
 	t.Parallel()
 
 	service := &fakeGmailService{
-		searchThreadsResult: gmailapi.SearchThreadsResult{
-			Threads: []*gmail.Thread{
-				{Id: "thread-1"},
-				{Id: "thread-2"},
+		searchThreadPages: map[string]gmailapi.SearchThreadsResult{
+			"": {
+				Threads: []*gmail.Thread{
+					{Id: "thread-hidden-1"},
+					{Id: "thread-hidden-2"},
+				},
+				NextPageToken: "thread-page-2",
 			},
-			NextPageToken: "thread-next",
+			"thread-page-2": {
+				Threads: []*gmail.Thread{
+					{Id: "thread-1"},
+				},
+			},
 		},
 		threads: map[string]*gmail.Thread{
+			"thread-hidden-1": {
+				Id: "thread-hidden-1",
+				Messages: []*gmail.Message{
+					testMessageAt("msg-hidden-1", "thread-hidden-1", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "hidden snippet", 1710267600000, "Hidden Subject"),
+				},
+			},
+			"thread-hidden-2": {
+				Id: "thread-hidden-2",
+				Messages: []*gmail.Message{
+					testMessageAt("msg-hidden-2", "thread-hidden-2", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "hidden snippet", 1710354000000, "Hidden Subject"),
+				},
+			},
 			"thread-1": {
 				Id: "thread-1",
 				Messages: []*gmail.Message{
@@ -290,7 +383,7 @@ func TestHandleSearchThreadsOmitsHiddenThreadsAndSanitizesSummary(t *testing.T) 
 		V:      rpc.Version1,
 		ID:     "req-thread-search",
 		Method: rpc.MethodGmailSearchThreads,
-		Params: []byte(`{"query":"in:anywhere"}`),
+		Params: []byte(`{"query":"in:anywhere","limit":1}`),
 	})
 	if !resp.OK {
 		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
@@ -303,8 +396,8 @@ func TestHandleSearchThreadsOmitsHiddenThreadsAndSanitizesSummary(t *testing.T) 
 	if len(result.Threads) != 1 {
 		t.Fatalf("len(result.Threads) = %d, want 1", len(result.Threads))
 	}
-	if result.NextPageToken != "thread-next" {
-		t.Fatalf("result.NextPageToken = %q, want thread-next", result.NextPageToken)
+	if result.NextPageToken != "" {
+		t.Fatalf("result.NextPageToken = %q, want empty", result.NextPageToken)
 	}
 	thread := result.Threads[0]
 	if thread.ThreadID != "thread-1" {
@@ -322,11 +415,14 @@ func TestHandleSearchThreadsOmitsHiddenThreadsAndSanitizesSummary(t *testing.T) 
 	if len(thread.Participants) != 2 || thread.Participants[0] != "alice@example.com" || thread.Participants[1] != "owner@example.com" {
 		t.Fatalf("thread.Participants = %#v, want filtered participants", thread.Participants)
 	}
-	if service.searchThreadCalls != 1 {
-		t.Fatalf("searchThreadCalls = %d, want 1", service.searchThreadCalls)
+	if service.searchThreadCalls != 2 {
+		t.Fatalf("searchThreadCalls = %d, want 2", service.searchThreadCalls)
 	}
-	if len(service.threadCalls) != 2 || service.threadCalls[0] != "thread-1" || service.threadCalls[1] != "thread-2" {
-		t.Fatalf("threadCalls = %#v, want [thread-1 thread-2]", service.threadCalls)
+	if len(service.searchThreadPageTokens) != 2 || service.searchThreadPageTokens[0] != "" || service.searchThreadPageTokens[1] != "thread-page-2" {
+		t.Fatalf("searchThreadPageTokens = %#v, want [\"\" \"thread-page-2\"]", service.searchThreadPageTokens)
+	}
+	if len(service.threadCalls) != 3 || service.threadCalls[0] != "thread-hidden-1" || service.threadCalls[1] != "thread-hidden-2" || service.threadCalls[2] != "thread-1" {
+		t.Fatalf("threadCalls = %#v, want [thread-hidden-1 thread-hidden-2 thread-1]", service.threadCalls)
 	}
 }
 
@@ -565,27 +661,31 @@ func TestHandleGetAttachmentRejectsOversizedAttachmentBeforeDownload(t *testing.
 }
 
 type fakeGmailService struct {
-	labels              map[string]string
-	labelErr            error
-	searchThreadsResult gmailapi.SearchThreadsResult
-	searchThreadsErr    error
-	searchResult        gmailapi.SearchMessagesResult
-	searchErr           error
-	threads             map[string]*gmail.Thread
-	threadErr           map[string]error
-	metadata            map[string]*gmail.Message
-	metadataErr         map[string]error
-	full                map[string]*gmail.Message
-	fullErr             map[string]error
-	attachmentData      map[string][]byte
-	attachmentErr       map[string]error
-	metadataCalls       []string
-	fullCalls           []string
-	threadCalls         []string
-	attachmentCalls     []string
-	labelCalls          int
-	searchThreadCalls   int
-	searchCalls         int
+	labels                 map[string]string
+	labelErr               error
+	searchThreadsResult    gmailapi.SearchThreadsResult
+	searchThreadPages      map[string]gmailapi.SearchThreadsResult
+	searchThreadsErr       error
+	searchResult           gmailapi.SearchMessagesResult
+	searchPages            map[string]gmailapi.SearchMessagesResult
+	searchErr              error
+	threads                map[string]*gmail.Thread
+	threadErr              map[string]error
+	metadata               map[string]*gmail.Message
+	metadataErr            map[string]error
+	full                   map[string]*gmail.Message
+	fullErr                map[string]error
+	attachmentData         map[string][]byte
+	attachmentErr          map[string]error
+	metadataCalls          []string
+	fullCalls              []string
+	threadCalls            []string
+	attachmentCalls        []string
+	searchThreadPageTokens []string
+	searchPageTokens       []string
+	labelCalls             int
+	searchThreadCalls      int
+	searchCalls            int
 }
 
 func (f *fakeGmailService) ProfileEmail(context.Context) (string, error) {
@@ -597,13 +697,33 @@ func (f *fakeGmailService) ListLabelNameToID(context.Context) (map[string]string
 	return f.labels, f.labelErr
 }
 
-func (f *fakeGmailService) SearchThreads(context.Context, string, int64, string) (gmailapi.SearchThreadsResult, error) {
+func (f *fakeGmailService) SearchThreads(_ context.Context, _ string, _ int64, pageToken string) (gmailapi.SearchThreadsResult, error) {
 	f.searchThreadCalls++
+	f.searchThreadPageTokens = append(f.searchThreadPageTokens, pageToken)
+	if f.searchThreadsErr != nil {
+		return gmailapi.SearchThreadsResult{}, f.searchThreadsErr
+	}
+	if f.searchThreadPages != nil {
+		if result, ok := f.searchThreadPages[pageToken]; ok {
+			return result, nil
+		}
+		return gmailapi.SearchThreadsResult{}, nil
+	}
 	return f.searchThreadsResult, f.searchThreadsErr
 }
 
-func (f *fakeGmailService) SearchMessages(context.Context, string, int64, string) (gmailapi.SearchMessagesResult, error) {
+func (f *fakeGmailService) SearchMessages(_ context.Context, _ string, _ int64, pageToken string) (gmailapi.SearchMessagesResult, error) {
 	f.searchCalls++
+	f.searchPageTokens = append(f.searchPageTokens, pageToken)
+	if f.searchErr != nil {
+		return gmailapi.SearchMessagesResult{}, f.searchErr
+	}
+	if f.searchPages != nil {
+		if result, ok := f.searchPages[pageToken]; ok {
+			return result, nil
+		}
+		return gmailapi.SearchMessagesResult{}, nil
+	}
 	return f.searchResult, f.searchErr
 }
 
