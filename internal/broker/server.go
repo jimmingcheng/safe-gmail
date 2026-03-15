@@ -249,8 +249,13 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 			if err != nil {
 				return mapGmailError(req.ID, err)
 			}
+			nextPageToken := strings.TrimSpace(page.NextPageToken)
+			if currentPageToken != "" && nextPageToken == currentPageToken {
+				gmailPageToken = ""
+				break
+			}
 			pendingIDs = extractThreadIDs(page.Threads)
-			gmailPageToken = page.NextPageToken
+			gmailPageToken = nextPageToken
 			if len(pendingIDs) == 0 {
 				if strings.TrimSpace(gmailPageToken) == "" || strings.TrimSpace(gmailPageToken) == strings.TrimSpace(currentPageToken) {
 					gmailPageToken = ""
@@ -382,8 +387,13 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 			if err != nil {
 				return mapGmailError(req.ID, err)
 			}
+			nextPageToken := strings.TrimSpace(page.NextPageToken)
+			if currentPageToken != "" && nextPageToken == currentPageToken {
+				gmailPageToken = ""
+				break
+			}
 			pendingIDs = extractMessageIDs(page.Messages)
-			gmailPageToken = page.NextPageToken
+			gmailPageToken = nextPageToken
 			if len(pendingIDs) == 0 {
 				if strings.TrimSpace(gmailPageToken) == "" || strings.TrimSpace(gmailPageToken) == strings.TrimSpace(currentPageToken) {
 					gmailPageToken = ""
