@@ -23,6 +23,7 @@ const requestTimeout = 30 * time.Second
 // Service is the minimal Gmail surface the broker needs in v1.
 type Service interface {
 	ProfileEmail(ctx context.Context) (string, error)
+	ListLabels(ctx context.Context) ([]Label, error)
 	ListLabelNameToID(ctx context.Context) (map[string]string, error)
 	SearchThreads(ctx context.Context, query string, limit int64, pageToken string) (SearchThreadsResult, error)
 	SearchMessages(ctx context.Context, query string, limit int64, pageToken string) (SearchMessagesResult, error)
@@ -30,6 +31,13 @@ type Service interface {
 	GetMessageFull(ctx context.Context, messageID string) (*gmail.Message, error)
 	GetThreadMetadata(ctx context.Context, threadID string) (*gmail.Thread, error)
 	GetAttachmentData(ctx context.Context, messageID, attachmentID string) ([]byte, error)
+}
+
+// Label is the normalized Gmail label metadata the broker uses for policy and discovery.
+type Label struct {
+	ID   string
+	Name string
+	Type string
 }
 
 // SearchThreadsResult is the broker-side search page returned from Gmail.
@@ -120,7 +128,7 @@ func (c *Client) ProfileEmail(ctx context.Context) (string, error) {
 }
 
 // ListLabelNameToID returns a lowercased name-to-ID map for label allowlists.
-func (c *Client) ListLabelNameToID(ctx context.Context) (map[string]string, error) {
+func (c *Client) ListLabels(ctx context.Context) ([]Label, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -129,12 +137,33 @@ func (c *Client) ListLabelNameToID(ctx context.Context) (map[string]string, erro
 		return nil, fmt.Errorf("list gmail labels: %w", err)
 	}
 
-	result := make(map[string]string, len(resp.Labels))
+	result := make([]Label, 0, len(resp.Labels))
 	for _, label := range resp.Labels {
 		if label == nil || label.Id == "" || label.Name == "" {
 			continue
 		}
-		result[strings.ToLower(label.Name)] = label.Id
+		result = append(result, Label{
+			ID:   strings.TrimSpace(label.Id),
+			Name: strings.TrimSpace(label.Name),
+			Type: strings.ToLower(strings.TrimSpace(label.Type)),
+		})
+	}
+	return result, nil
+}
+
+// ListLabelNameToID returns a lowercased name-to-ID map for label allowlists.
+func (c *Client) ListLabelNameToID(ctx context.Context) (map[string]string, error) {
+	labels, err := c.ListLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(labels))
+	for _, label := range labels {
+		if label.ID == "" || label.Name == "" {
+			continue
+		}
+		result[strings.ToLower(label.Name)] = label.ID
 	}
 	return result, nil
 }

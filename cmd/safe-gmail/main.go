@@ -25,19 +25,22 @@ func run(args []string) int {
 	socketPath := fs.String("socket", os.Getenv("SAFE_GMAIL_SOCKET"), "Path to broker Unix socket")
 	jsonOut := fs.Bool("json", false, "Print raw JSON response")
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		usage(os.Stderr)
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Global flags:")
+		fs.PrintDefaults()
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
 	rest := fs.Args()
-	if *socketPath == "" {
-		fmt.Fprintln(os.Stderr, "missing --socket or SAFE_GMAIL_SOCKET")
-		return 2
-	}
-
 	switch {
 	case len(rest) >= 1 && rest[0] == "system":
 		return runSystem(*socketPath, *jsonOut, rest[1:])
+	case len(rest) >= 1 && rest[0] == "labels":
+		return runLabels(*socketPath, *jsonOut, rest[1:])
 	case len(rest) >= 1 && rest[0] == "search":
 		return runSearch(*socketPath, *jsonOut, rest[1:])
 	case len(rest) >= 1 && rest[0] == "get":
@@ -66,6 +69,10 @@ func runSystem(socketPath string, jsonOut bool, args []string) int {
 		method = rpc.MethodSystemInfo
 	default:
 		usage(os.Stderr)
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
@@ -111,10 +118,37 @@ func runSystem(socketPath string, jsonOut bool, args []string) int {
 		fmt.Fprintf(os.Stdout, "service\t%s\n", info.Service)
 		fmt.Fprintf(os.Stdout, "instance\t%s\n", info.Instance)
 		fmt.Fprintf(os.Stdout, "account\t%s\n", info.AccountEmail)
+		if info.SearchQuerySyntax != "" {
+			fmt.Fprintf(os.Stdout, "search_query_syntax\t%s\n", info.SearchQuerySyntax)
+		}
+		if info.LabelQueryMode != "" {
+			fmt.Fprintf(os.Stdout, "label_query_mode\t%s\n", info.LabelQueryMode)
+		}
+		if info.LabelSampleMethod != "" {
+			fmt.Fprintf(os.Stdout, "label_sample_method\t%s\n", info.LabelSampleMethod)
+		}
+		if info.LabelSampleQuery != "" {
+			fmt.Fprintf(os.Stdout, "recommended_label_sample_query\t%s\n", info.LabelSampleQuery)
+		}
 		fmt.Fprintf(os.Stdout, "methods\t%s\n", strings.Join(info.Methods, ","))
 	}
 
 	return 0
+}
+
+func runLabels(socketPath string, jsonOut bool, args []string) int {
+	if len(args) == 0 {
+		usage(os.Stderr)
+		return 2
+	}
+
+	switch args[0] {
+	case "sample":
+		return runLabelsSample(socketPath, jsonOut, args[1:])
+	default:
+		usage(os.Stderr)
+		return 2
+	}
 }
 
 func runGet(socketPath string, jsonOut bool, args []string) int {
@@ -126,6 +160,10 @@ func runGet(socketPath string, jsonOut bool, args []string) int {
 	}
 	if fs.NArg() != 1 {
 		usage(os.Stderr)
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
@@ -197,11 +235,20 @@ func runSearch(socketPath string, jsonOut bool, args []string) int {
 	limit := fs.Int("limit", 0, "Maximum number of results")
 	pageToken := fs.String("page-token", "", "Opaque page token")
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail search [--body] [--limit N] [--page-token TOKEN] <query>",
+			"<query> uses Gmail search syntax, for example: label:vip newer_than:7d or from:alice@example.com has:attachment.",
+			fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() == 0 {
-		usage(os.Stderr)
+		fs.Usage()
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
@@ -270,6 +317,76 @@ func runSearch(socketPath string, jsonOut bool, args []string) int {
 	return 0
 }
 
+func runLabelsSample(socketPath string, jsonOut bool, args []string) int {
+	fs := flag.NewFlagSet("labels sample", flag.ContinueOnError)
+	limit := fs.Int("limit", 0, "Maximum number of visible messages to sample")
+	pageToken := fs.String("page-token", "", "Opaque page token")
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail labels sample [--limit N] [--page-token TOKEN] [query]",
+			"[query] uses Gmail search syntax and defaults to in:inbox. Query labels by name, and cache this inventory locally for later label:<name> searches.",
+			fs)
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	params, err := json.Marshal(rpc.GmailSampleLabelsParams{
+		Query:     strings.Join(fs.Args(), " "),
+		Limit:     *limit,
+		PageToken: *pageToken,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	req := rpc.Request{
+		V:      rpc.Version1,
+		ID:     fmt.Sprintf("cli-%d", time.Now().UnixNano()),
+		Method: rpc.MethodGmailSampleLabels,
+		Params: params,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := rpc.Call(ctx, socketPath, req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if jsonOut {
+		return printJSONResponse(resp)
+	}
+	if !resp.OK {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", resp.Error.Code, resp.Error.Message)
+		return 1
+	}
+
+	var result rpc.GmailSampleLabelsResult
+	if err := decodeResult(resp.Result, &result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	for i, label := range result.Labels {
+		if i > 0 {
+			fmt.Fprintln(os.Stdout)
+		}
+		printLabelSummary(os.Stdout, label)
+	}
+	if len(result.Labels) > 0 {
+		fmt.Fprintln(os.Stdout)
+	}
+	fmt.Fprintf(os.Stdout, "sampled_message_count\t%d\n", result.SampledMessageCount)
+	fmt.Fprintf(os.Stdout, "next_page_token\t%s\n", result.NextPageToken)
+	return 0
+}
+
 func runThread(socketPath string, jsonOut bool, args []string) int {
 	if len(args) == 0 {
 		usage(os.Stderr)
@@ -292,11 +409,20 @@ func runThreadSearch(socketPath string, jsonOut bool, args []string) int {
 	limit := fs.Int("limit", 0, "Maximum number of results")
 	pageToken := fs.String("page-token", "", "Opaque page token")
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail thread search [--limit N] [--page-token TOKEN] <query>",
+			"<query> uses Gmail search syntax. Thread results are filtered to visible messages only, and label queries use label names such as label:vip.",
+			fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() == 0 {
-		usage(os.Stderr)
+		fs.Usage()
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
@@ -357,6 +483,10 @@ func runThreadGet(socketPath string, jsonOut bool, args []string) int {
 	}
 	if fs.NArg() != 1 {
 		usage(os.Stderr)
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
@@ -433,6 +563,10 @@ func runAttachment(socketPath string, jsonOut bool, args []string) int {
 	}
 	if fs.NArg() != 2 {
 		usage(os.Stderr)
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
@@ -557,6 +691,33 @@ func printThreadSummary(w io.Writer, thread rpc.ThreadSummary) {
 	fmt.Fprintf(w, "last_message_at\t%s\n", thread.LastMessageAt)
 }
 
+func printLabelSummary(w io.Writer, label rpc.LabelSummary) {
+	fmt.Fprintf(w, "label_id\t%s\n", label.LabelID)
+	fmt.Fprintf(w, "label_name\t%s\n", label.LabelName)
+	if label.LabelType != "" {
+		fmt.Fprintf(w, "label_type\t%s\n", label.LabelType)
+	}
+	fmt.Fprintf(w, "message_count\t%d\n", label.MessageCount)
+}
+
+func printCommandUsage(w io.Writer, command, note string, fs *flag.FlagSet) {
+	fmt.Fprintf(w, "Usage:\n  %s\n", command)
+	if strings.TrimSpace(note) != "" {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, note)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Flags:")
+	fs.PrintDefaults()
+}
+
+func requireSocket(socketPath string) error {
+	if strings.TrimSpace(socketPath) == "" {
+		return fmt.Errorf("missing --socket or SAFE_GMAIL_SOCKET")
+	}
+	return nil
+}
+
 func writeFileAtomic(path string, data []byte) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -587,9 +748,14 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock system ping")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock system info")
+	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock labels sample [--limit N] [--page-token TOKEN] [query]")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock search [--body] [--limit N] [--page-token TOKEN] <query>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock get [--body] <message-id>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock thread search [--limit N] [--page-token TOKEN] <query>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock thread get [--bodies] <thread-id>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock attachment get [--output PATH] <message-id> <attachment-id>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Notes:")
+	fmt.Fprintln(w, "  search queries use Gmail query syntax.")
+	fmt.Fprintln(w, "  Query labels by name, for example: label:vip or label:\"Kids/School\".")
 }

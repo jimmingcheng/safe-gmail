@@ -11,6 +11,7 @@ const Version1 = 1
 const (
 	MethodSystemPing          = "system.ping"
 	MethodSystemInfo          = "system.info"
+	MethodGmailSampleLabels   = "gmail.sample_labels"
 	MethodGmailSearchThreads  = "gmail.search_threads"
 	MethodGmailSearchMessages = "gmail.search_messages"
 	MethodGmailGetMessage     = "gmail.get_message"
@@ -51,7 +52,19 @@ type SystemInfo struct {
 	MaxBodyBytes       int      `json:"max_body_bytes"`
 	MaxAttachmentBytes int      `json:"max_attachment_bytes"`
 	MaxSearchResults   int      `json:"max_search_results"`
+	SearchQuerySyntax  string   `json:"search_query_syntax,omitempty"`
+	LabelQueryMode     string   `json:"label_query_mode,omitempty"`
+	LabelSampleMethod  string   `json:"label_sample_method,omitempty"`
+	LabelSampleQuery   string   `json:"recommended_label_sample_query,omitempty"`
 	Methods            []string `json:"methods"`
+}
+
+// LabelSummary is the broker-owned observed label shape.
+type LabelSummary struct {
+	LabelID      string `json:"label_id"`
+	LabelName    string `json:"label_name,omitempty"`
+	LabelType    string `json:"label_type,omitempty"`
+	MessageCount int    `json:"message_count"`
 }
 
 // AttachmentMeta is the exposed attachment metadata for a message.
@@ -127,6 +140,13 @@ type GmailSearchThreadsParams struct {
 	PageToken string `json:"page_token,omitempty"`
 }
 
+// GmailSampleLabelsParams is the request payload for gmail.sample_labels.
+type GmailSampleLabelsParams struct {
+	Query     string `json:"query,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+	PageToken string `json:"page_token,omitempty"`
+}
+
 // GmailGetMessageParams is the request payload for gmail.get_message.
 type GmailGetMessageParams struct {
 	MessageID   string `json:"message_id"`
@@ -163,6 +183,13 @@ type GmailSearchThreadsResult struct {
 	NextPageToken string          `json:"next_page_token"`
 }
 
+// GmailSampleLabelsResult is the result payload for gmail.sample_labels.
+type GmailSampleLabelsResult struct {
+	Labels              []LabelSummary `json:"labels"`
+	SampledMessageCount int            `json:"sampled_message_count"`
+	NextPageToken       string         `json:"next_page_token"`
+}
+
 // GmailGetMessageResult is the result payload for gmail.get_message.
 type GmailGetMessageResult struct {
 	Message MessageDetail `json:"message"`
@@ -193,6 +220,14 @@ func (p GmailSearchMessagesParams) Validate() error {
 
 // Validate enforces method-specific invariants.
 func (p GmailSearchThreadsParams) Validate() error {
+	if p.Limit < 0 {
+		return fmt.Errorf("limit must be non-negative")
+	}
+	return nil
+}
+
+// Validate enforces method-specific invariants.
+func (p GmailSampleLabelsParams) Validate() error {
 	if p.Limit < 0 {
 		return fmt.Errorf("limit must be non-negative")
 	}

@@ -20,6 +20,7 @@ V1 covers:
 
 - `system.ping`
 - `system.info`
+- `gmail.sample_labels`
 - `gmail.search_threads`
 - `gmail.search_messages`
 - `gmail.get_message`
@@ -511,6 +512,65 @@ Rules:
 ```
 
 ## Gmail Methods
+
+### `gmail.sample_labels`
+
+Request params:
+
+```json
+{
+  "query": "in:inbox",
+  "limit": 100,
+  "page_token": ""
+}
+```
+
+Fields:
+
+- `query`
+  - optional
+  - string
+  - Gmail query syntax
+  - default: `in:inbox`
+- `limit`
+  - optional
+  - integer
+  - default: `20`
+  - max: broker `max_search_results`
+- `page_token`
+  - optional
+  - string
+  - default: `""`
+
+Success result:
+
+```json
+{
+  "labels": [
+    {
+      "label_id": "Label_1",
+      "label_name": "vip",
+      "label_type": "user",
+      "message_count": 12
+    },
+    {
+      "label_id": "INBOX",
+      "label_name": "INBOX",
+      "label_type": "system",
+      "message_count": 12
+    }
+  ],
+  "sampled_message_count": 20,
+  "next_page_token": ""
+}
+```
+
+Rules:
+
+- sample only labels seen on visible messages
+- do not leak label names for hidden messages
+- this method is intended for occasional inventory and local caching, not per-query use
+- future label queries should use `label_name`, not returned `label_id`
 
 ### `gmail.search_threads`
 

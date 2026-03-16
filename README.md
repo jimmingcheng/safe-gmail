@@ -8,6 +8,7 @@ The broker gives the untrusted side a small read-only Gmail surface:
 
 - `system ping`
 - `system info`
+- label sampling
 - message search
 - thread search
 - message get
@@ -215,6 +216,7 @@ Try a search:
 ```sh
 safe-gmail search "newer_than:7d"
 safe-gmail thread search "from:alice@example.com"
+safe-gmail labels sample "in:inbox"
 ```
 
 Fetch a message or thread:
@@ -239,6 +241,7 @@ For machine-readable responses, use `--json`:
 
 ```sh
 safe-gmail --json system info
+safe-gmail --json labels sample "in:inbox"
 safe-gmail --json search "label:vip newer_than:7d"
 safe-gmail --json get --body <message-id>
 safe-gmail --json thread get --bodies <thread-id>
@@ -249,6 +252,10 @@ Practical guidance for agents:
 - treat the broker as the only allowed Gmail interface
 - do not ask for raw Gmail OAuth tokens or browser cookies
 - prefer `--json` when another tool will parse the output
+- search queries use Gmail query syntax
+- query labels by name, not by returned `label_ids`
+- refresh a label inventory occasionally with `safe-gmail --json labels sample "in:inbox"` and cache the results locally
+- avoid sampling labels before every query; label names usually change much more slowly than message state
 - expect policy filtering: search results may omit messages that exist in Gmail
 
 ## Updating An Existing Install
