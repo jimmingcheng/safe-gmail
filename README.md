@@ -8,7 +8,7 @@ The broker gives the untrusted side a small read-only Gmail surface:
 
 - `system ping`
 - `system info`
-- label sampling
+- label listing
 - message search
 - thread search
 - message get
@@ -21,6 +21,8 @@ Filtering is server-side and based on fixed message metadata. You can expose mai
 - optional `allow_owner_sent` for everything sent by the owner account
 
 A message is visible if it has the configured visibility label, or if it is owner-sent when that option is enabled. Thread results are filtered message-by-message.
+
+Label listing is intentionally different: `labels list` returns the mailbox's full Gmail label inventory and is not filtered by the broker visibility policy.
 
 It does not expose Gmail settings, unrestricted Gmail API access, or direct OAuth credentials.
 
@@ -216,7 +218,7 @@ Try a search:
 ```sh
 safe-gmail search "newer_than:7d"
 safe-gmail thread search "from:alice@example.com"
-safe-gmail labels sample "in:inbox"
+safe-gmail labels list
 ```
 
 Fetch a message or thread:
@@ -241,7 +243,7 @@ For machine-readable responses, use `--json`:
 
 ```sh
 safe-gmail --json system info
-safe-gmail --json labels sample "in:inbox"
+safe-gmail --json labels list
 safe-gmail --json search "label:vip newer_than:7d"
 safe-gmail --json get --body <message-id>
 safe-gmail --json thread get --bodies <thread-id>
@@ -253,9 +255,11 @@ Practical guidance for agents:
 - do not ask for raw Gmail OAuth tokens or browser cookies
 - prefer `--json` when another tool will parse the output
 - search queries use Gmail query syntax
+- label listing is mailbox-wide and not filtered by the broker visibility policy
+- if you omit an `in:` operator, search and thread search default to `in:anywhere`, so archived mail is included by default
 - query labels by name, not by returned `label_ids`
-- refresh a label inventory occasionally with `safe-gmail --json labels sample "in:inbox"` and cache the results locally
-- avoid sampling labels before every query; label names usually change much more slowly than message state
+- refresh a label inventory occasionally with `safe-gmail --json labels list` and cache the results locally
+- avoid refreshing labels before every query; label names usually change much more slowly than message state
 - expect policy filtering: search results may omit messages that exist in Gmail
 
 ## Updating An Existing Install

@@ -124,11 +124,11 @@ func runSystem(socketPath string, jsonOut bool, args []string) int {
 		if info.LabelQueryMode != "" {
 			fmt.Fprintf(os.Stdout, "label_query_mode\t%s\n", info.LabelQueryMode)
 		}
-		if info.LabelSampleMethod != "" {
-			fmt.Fprintf(os.Stdout, "label_sample_method\t%s\n", info.LabelSampleMethod)
+		if info.LabelListMethod != "" {
+			fmt.Fprintf(os.Stdout, "label_list_method\t%s\n", info.LabelListMethod)
 		}
-		if info.LabelSampleQuery != "" {
-			fmt.Fprintf(os.Stdout, "recommended_label_sample_query\t%s\n", info.LabelSampleQuery)
+		if info.LabelListScope != "" {
+			fmt.Fprintf(os.Stdout, "label_list_scope\t%s\n", info.LabelListScope)
 		}
 		fmt.Fprintf(os.Stdout, "methods\t%s\n", strings.Join(info.Methods, ","))
 	}
@@ -143,8 +143,8 @@ func runLabels(socketPath string, jsonOut bool, args []string) int {
 	}
 
 	switch args[0] {
-	case "sample":
-		return runLabelsSample(socketPath, jsonOut, args[1:])
+	case "list":
+		return runLabelsList(socketPath, jsonOut, args[1:])
 	default:
 		usage(os.Stderr)
 		return 2
@@ -237,7 +237,7 @@ func runSearch(socketPath string, jsonOut bool, args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		printCommandUsage(os.Stderr, "safe-gmail search [--body] [--limit N] [--page-token TOKEN] <query>",
-			"<query> uses Gmail search syntax, for example: label:vip newer_than:7d or from:alice@example.com has:attachment.",
+			"<query> uses Gmail search syntax. If you omit an in: operator, the broker defaults to in:anywhere; for example: label:vip newer_than:7d or from:alice@example.com has:attachment.",
 			fs)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -317,17 +317,19 @@ func runSearch(socketPath string, jsonOut bool, args []string) int {
 	return 0
 }
 
-func runLabelsSample(socketPath string, jsonOut bool, args []string) int {
-	fs := flag.NewFlagSet("labels sample", flag.ContinueOnError)
-	limit := fs.Int("limit", 0, "Maximum number of visible messages to sample")
-	pageToken := fs.String("page-token", "", "Opaque page token")
+func runLabelsList(socketPath string, jsonOut bool, args []string) int {
+	fs := flag.NewFlagSet("labels list", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		printCommandUsage(os.Stderr, "safe-gmail labels sample [--limit N] [--page-token TOKEN] [query]",
-			"[query] uses Gmail search syntax and defaults to in:inbox. Query labels by name, and cache this inventory locally for later label:<name> searches.",
+		printCommandUsage(os.Stderr, "safe-gmail labels list",
+			"Lists Gmail labels directly from the mailbox. This label inventory is not filtered by the broker visibility policy; query labels later by name with label:<name> and cache the result locally.",
 			fs)
 	}
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
 		return 2
 	}
 	if err := requireSocket(socketPath); err != nil {
@@ -335,11 +337,7 @@ func runLabelsSample(socketPath string, jsonOut bool, args []string) int {
 		return 2
 	}
 
-	params, err := json.Marshal(rpc.GmailSampleLabelsParams{
-		Query:     strings.Join(fs.Args(), " "),
-		Limit:     *limit,
-		PageToken: *pageToken,
-	})
+	params, err := json.Marshal(rpc.GmailListLabelsParams{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -348,7 +346,7 @@ func runLabelsSample(socketPath string, jsonOut bool, args []string) int {
 	req := rpc.Request{
 		V:      rpc.Version1,
 		ID:     fmt.Sprintf("cli-%d", time.Now().UnixNano()),
-		Method: rpc.MethodGmailSampleLabels,
+		Method: rpc.MethodGmailListLabels,
 		Params: params,
 	}
 
@@ -368,7 +366,7 @@ func runLabelsSample(socketPath string, jsonOut bool, args []string) int {
 		return 1
 	}
 
-	var result rpc.GmailSampleLabelsResult
+	var result rpc.GmailListLabelsResult
 	if err := decodeResult(resp.Result, &result); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -377,13 +375,8 @@ func runLabelsSample(socketPath string, jsonOut bool, args []string) int {
 		if i > 0 {
 			fmt.Fprintln(os.Stdout)
 		}
-		printLabelSummary(os.Stdout, label)
+		printLabelInfo(os.Stdout, label)
 	}
-	if len(result.Labels) > 0 {
-		fmt.Fprintln(os.Stdout)
-	}
-	fmt.Fprintf(os.Stdout, "sampled_message_count\t%d\n", result.SampledMessageCount)
-	fmt.Fprintf(os.Stdout, "next_page_token\t%s\n", result.NextPageToken)
 	return 0
 }
 
@@ -411,7 +404,7 @@ func runThreadSearch(socketPath string, jsonOut bool, args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		printCommandUsage(os.Stderr, "safe-gmail thread search [--limit N] [--page-token TOKEN] <query>",
-			"<query> uses Gmail search syntax. Thread results are filtered to visible messages only, and label queries use label names such as label:vip.",
+			"<query> uses Gmail search syntax. If you omit an in: operator, the broker defaults to in:anywhere; thread results are filtered to visible messages only, and label queries use label names such as label:vip.",
 			fs)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -691,13 +684,22 @@ func printThreadSummary(w io.Writer, thread rpc.ThreadSummary) {
 	fmt.Fprintf(w, "last_message_at\t%s\n", thread.LastMessageAt)
 }
 
-func printLabelSummary(w io.Writer, label rpc.LabelSummary) {
+func printLabelInfo(w io.Writer, label rpc.LabelInfo) {
 	fmt.Fprintf(w, "label_id\t%s\n", label.LabelID)
 	fmt.Fprintf(w, "label_name\t%s\n", label.LabelName)
 	if label.LabelType != "" {
 		fmt.Fprintf(w, "label_type\t%s\n", label.LabelType)
 	}
-	fmt.Fprintf(w, "message_count\t%d\n", label.MessageCount)
+	if label.LabelListVisibility != "" {
+		fmt.Fprintf(w, "label_list_visibility\t%s\n", label.LabelListVisibility)
+	}
+	if label.MessageListVisibility != "" {
+		fmt.Fprintf(w, "message_list_visibility\t%s\n", label.MessageListVisibility)
+	}
+	fmt.Fprintf(w, "messages_total\t%d\n", label.MessagesTotal)
+	fmt.Fprintf(w, "messages_unread\t%d\n", label.MessagesUnread)
+	fmt.Fprintf(w, "threads_total\t%d\n", label.ThreadsTotal)
+	fmt.Fprintf(w, "threads_unread\t%d\n", label.ThreadsUnread)
 }
 
 func printCommandUsage(w io.Writer, command, note string, fs *flag.FlagSet) {
@@ -748,7 +750,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock system ping")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock system info")
-	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock labels sample [--limit N] [--page-token TOKEN] [query]")
+	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock labels list")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock search [--body] [--limit N] [--page-token TOKEN] <query>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock get [--body] <message-id>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock thread search [--limit N] [--page-token TOKEN] <query>")
@@ -757,5 +759,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Notes:")
 	fmt.Fprintln(w, "  search queries use Gmail query syntax.")
+	fmt.Fprintln(w, "  If you omit an in: operator, searches default to in:anywhere.")
 	fmt.Fprintln(w, "  Query labels by name, for example: label:vip or label:\"Kids/School\".")
+	fmt.Fprintln(w, "  labels list is mailbox-wide and is not filtered by the broker visibility policy.")
 }

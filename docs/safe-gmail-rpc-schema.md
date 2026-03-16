@@ -20,18 +20,11 @@ V1 covers:
 
 - `system.ping`
 - `system.info`
-- `gmail.sample_labels`
+- `gmail.list_labels`
 - `gmail.search_threads`
 - `gmail.search_messages`
 - `gmail.get_message`
 - `gmail.get_thread`
-- `gmail.list_drafts`
-- `gmail.get_draft`
-- `gmail.create_draft`
-- `gmail.update_draft`
-- `gmail.send_draft`
-- `gmail.delete_draft`
-- `gmail.send_message`
 - `gmail.get_attachment`
 
 All other methods must return `method_not_allowed`.
@@ -346,20 +339,18 @@ Success result:
   "max_body_bytes": 65536,
   "max_attachment_bytes": 26214400,
   "max_search_results": 100,
+  "search_query_syntax": "gmail",
+  "label_query_mode": "name",
+  "label_list_method": "gmail.list_labels",
+  "label_list_scope": "mailbox",
   "methods": [
     "system.ping",
     "system.info",
+    "gmail.list_labels",
     "gmail.search_threads",
     "gmail.search_messages",
     "gmail.get_message",
     "gmail.get_thread",
-    "gmail.list_drafts",
-    "gmail.get_draft",
-    "gmail.create_draft",
-    "gmail.update_draft",
-    "gmail.send_draft",
-    "gmail.delete_draft",
-    "gmail.send_message",
     "gmail.get_attachment"
   ]
 }
@@ -513,34 +504,17 @@ Rules:
 
 ## Gmail Methods
 
-### `gmail.sample_labels`
+### `gmail.list_labels`
 
 Request params:
 
 ```json
-{
-  "query": "in:inbox",
-  "limit": 100,
-  "page_token": ""
-}
+{}
 ```
 
 Fields:
 
-- `query`
-  - optional
-  - string
-  - Gmail query syntax
-  - default: `in:inbox`
-- `limit`
-  - optional
-  - integer
-  - default: `20`
-  - max: broker `max_search_results`
-- `page_token`
-  - optional
-  - string
-  - default: `""`
+- no fields in v1
 
 Success result:
 
@@ -551,24 +525,32 @@ Success result:
       "label_id": "Label_1",
       "label_name": "vip",
       "label_type": "user",
-      "message_count": 12
+      "label_list_visibility": "labelShow",
+      "message_list_visibility": "show",
+      "messages_total": 12,
+      "messages_unread": 1,
+      "threads_total": 9,
+      "threads_unread": 1
     },
     {
       "label_id": "INBOX",
       "label_name": "INBOX",
       "label_type": "system",
-      "message_count": 12
+      "label_list_visibility": "labelShow",
+      "message_list_visibility": "show",
+      "messages_total": 42,
+      "messages_unread": 3,
+      "threads_total": 31,
+      "threads_unread": 2
     }
-  ],
-  "sampled_message_count": 20,
-  "next_page_token": ""
+  ]
 }
 ```
 
 Rules:
 
-- sample only labels seen on visible messages
-- do not leak label names for hidden messages
+- list the mailbox's direct Gmail label inventory
+- this method is not filtered by the broker visibility policy
 - this method is intended for occasional inventory and local caching, not per-query use
 - future label queries should use `label_name`, not returned `label_id`
 
@@ -590,6 +572,7 @@ Fields:
   - required
   - string
   - Gmail query syntax
+  - if no `in:` mailbox operator is present, the broker adds `in:anywhere`
 - `limit`
   - optional
   - integer
@@ -642,6 +625,8 @@ Fields:
 - `query`
   - required
   - string
+  - Gmail query syntax
+  - if no `in:` mailbox operator is present, the broker adds `in:anywhere`
 - `limit`
   - optional
   - integer

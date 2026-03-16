@@ -157,34 +157,45 @@ func TestHandleGetMessageMapsNotFound(t *testing.T) {
 	}
 }
 
-func TestHandleSampleLabelsReturnsVisibleQueryableNames(t *testing.T) {
+func TestHandleListLabelsReturnsMailboxLabels(t *testing.T) {
 	t.Parallel()
 
 	service := &fakeGmailService{
-		labels: map[string]string{
-			"INBOX":          "INBOX",
-			"Projects/Alpha": "Label_2",
-			"vip":            "Label_1",
-			"Finance":        "Label_3",
-		},
-		searchPages: map[string]gmailapi.SearchMessagesResult{
-			"": {
-				Messages: []*gmail.Message{
-					{Id: "msg-1", ThreadId: "thread-1"},
-					{Id: "msg-2", ThreadId: "thread-2"},
-					{Id: "msg-3", ThreadId: "thread-3"},
-				},
+		labelList: []gmailapi.Label{
+			{
+				ID:                    "Label_2",
+				Name:                  "Projects/Alpha",
+				Type:                  "user",
+				LabelListVisibility:   "labelShowIfUnread",
+				MessageListVisibility: "hide",
+				MessagesTotal:         12,
+				MessagesUnread:        2,
+				ThreadsTotal:          9,
+				ThreadsUnread:         1,
+			},
+			{
+				ID:                    "INBOX",
+				Name:                  "INBOX",
+				Type:                  "system",
+				LabelListVisibility:   "labelShow",
+				MessageListVisibility: "show",
+				MessagesTotal:         30,
+				MessagesUnread:        4,
+				ThreadsTotal:          20,
+				ThreadsUnread:         3,
+			},
+			{
+				ID:                    "Label_1",
+				Name:                  "vip",
+				Type:                  "user",
+				LabelListVisibility:   "labelShow",
+				MessageListVisibility: "show",
+				MessagesTotal:         3,
+				MessagesUnread:        1,
+				ThreadsTotal:          2,
+				ThreadsUnread:         1,
 			},
 		},
-		metadata: map[string]*gmail.Message{
-			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1", "Label_2", "INBOX"}, "meta"),
-			"msg-2": testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1", "INBOX"}, "meta"),
-			"msg-3": testMessage("msg-3", "thread-3", "mallory@example.net", []string{"owner@example.com"}, []string{"Label_3", "INBOX"}, "meta"),
-		},
-		metadataErr: map[string]error{},
-		full:        map[string]*gmail.Message{},
-		fullErr:     map[string]error{},
-		threadErr:   map[string]error{},
 	}
 
 	srv, err := NewWithDeps(testConfig(), Dependencies{
@@ -202,44 +213,69 @@ func TestHandleSampleLabelsReturnsVisibleQueryableNames(t *testing.T) {
 	resp := srv.dispatch(rpc.Request{
 		V:      rpc.Version1,
 		ID:     "req-labels",
-		Method: rpc.MethodGmailSampleLabels,
-		Params: []byte(`{"limit":2}`),
+		Method: rpc.MethodGmailListLabels,
+		Params: []byte(`{}`),
 	})
 	if !resp.OK {
 		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
 	}
 
-	var result rpc.GmailSampleLabelsResult
+	var result rpc.GmailListLabelsResult
 	if err := decodeResult(resp.Result, &result); err != nil {
 		t.Fatalf("decodeResult() error = %v", err)
-	}
-	if result.SampledMessageCount != 2 {
-		t.Fatalf("result.SampledMessageCount = %d, want 2", result.SampledMessageCount)
 	}
 	if len(result.Labels) != 3 {
 		t.Fatalf("len(result.Labels) = %d, want 3", len(result.Labels))
 	}
-	if result.Labels[0].LabelID != "INBOX" || result.Labels[0].LabelName != "INBOX" || result.Labels[0].MessageCount != 2 {
-		t.Fatalf("result.Labels[0] = %#v, want INBOX count 2", result.Labels[0])
+	if result.Labels[0].LabelID != "INBOX" || result.Labels[0].LabelName != "INBOX" || result.Labels[0].MessagesTotal != 30 {
+		t.Fatalf("result.Labels[0] = %#v, want INBOX", result.Labels[0])
 	}
-	if result.Labels[1].LabelID != "Label_1" || result.Labels[1].LabelName != "vip" || result.Labels[1].MessageCount != 2 {
-		t.Fatalf("result.Labels[1] = %#v, want vip count 2", result.Labels[1])
+	if result.Labels[1].LabelID != "Label_2" || result.Labels[1].LabelName != "Projects/Alpha" || result.Labels[1].LabelListVisibility != "labelShowIfUnread" {
+		t.Fatalf("result.Labels[1] = %#v, want Projects/Alpha", result.Labels[1])
 	}
-	if result.Labels[2].LabelID != "Label_2" || result.Labels[2].LabelName != "Projects/Alpha" || result.Labels[2].MessageCount != 1 {
-		t.Fatalf("result.Labels[2] = %#v, want Projects/Alpha count 1", result.Labels[2])
+	if result.Labels[2].LabelID != "Label_1" || result.Labels[2].LabelName != "vip" || result.Labels[2].MessagesUnread != 1 {
+		t.Fatalf("result.Labels[2] = %#v, want vip", result.Labels[2])
 	}
-	if result.NextPageToken == "" {
-		t.Fatal("result.NextPageToken = empty, want opaque broker token")
+	if service.labelCalls != 1 {
+		t.Fatalf("labelCalls = %d, want 1", service.labelCalls)
 	}
-	cursor, err := decodeSearchPageToken(result.NextPageToken, searchPageKindLabels, "(in:inbox) (label:donna)")
+}
+
+func TestHandleListLabelsBypassesVisibilityLabelResolution(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeGmailService{
+		labelList: []gmailapi.Label{
+			{ID: "Label_2", Name: "Projects/Alpha", Type: "user"},
+		},
+	}
+
+	srv, err := NewWithDeps(testConfig(), Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return &policy.Policy{
+				Owner:           "owner@example.com",
+				VisibilityLabel: "missing-label",
+			}, nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
 	if err != nil {
-		t.Fatalf("decodeSearchPageToken() error = %v", err)
+		t.Fatalf("NewWithDeps() error = %v", err)
 	}
-	if len(cursor.PendingIDs) != 1 || cursor.PendingIDs[0] != "msg-3" {
-		t.Fatalf("cursor.PendingIDs = %#v, want [msg-3]", cursor.PendingIDs)
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-labels",
+		Method: rpc.MethodGmailListLabels,
+		Params: []byte(`{}`),
+	})
+	if !resp.OK {
+		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
 	}
-	if len(service.searchQueries) != 1 || service.searchQueries[0] != `(in:inbox) (label:donna)` {
-		t.Fatalf("service.searchQueries = %#v, want default inbox query", service.searchQueries)
+	if service.labelCalls != 1 {
+		t.Fatalf("labelCalls = %d, want 1", service.labelCalls)
 	}
 }
 
@@ -316,7 +352,7 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 	if result.NextPageToken == "" {
 		t.Fatalf("result.NextPageToken = empty, want opaque broker token")
 	}
-	cursor, err := decodeSearchPageToken(result.NextPageToken, searchPageKindMessages, "(newer_than:7d) (label:donna OR in:sent)")
+	cursor, err := decodeSearchPageToken(result.NextPageToken, searchPageKindMessages, "(in:anywhere) (newer_than:7d) (label:donna OR in:sent)")
 	if err != nil {
 		t.Fatalf("decodeSearchPageToken() error = %v", err)
 	}
@@ -332,7 +368,7 @@ func TestHandleSearchMessagesFiltersRestrictedAndFetchesBodiesOnlyForVisibleMess
 	if len(service.searchPageTokens) != 1 || service.searchPageTokens[0] != "" {
 		t.Fatalf("searchPageTokens = %#v, want [\"\"]", service.searchPageTokens)
 	}
-	if len(service.searchQueries) != 1 || service.searchQueries[0] != `(newer_than:7d) (label:donna OR in:sent)` {
+	if len(service.searchQueries) != 1 || service.searchQueries[0] != `(in:anywhere) (newer_than:7d) (label:donna OR in:sent)` {
 		t.Fatalf("searchQueries = %#v, want filtered query", service.searchQueries)
 	}
 	if len(service.fullCalls) != 2 || service.fullCalls[0] != "msg-1" || service.fullCalls[1] != "msg-2" {
@@ -600,14 +636,56 @@ func TestDispatchSystemInfoIncludesQueryAndLabelDiscoveryHints(t *testing.T) {
 	if info.LabelQueryMode != "name" {
 		t.Fatalf("info.LabelQueryMode = %q, want name", info.LabelQueryMode)
 	}
-	if info.LabelSampleMethod != rpc.MethodGmailSampleLabels {
-		t.Fatalf("info.LabelSampleMethod = %q, want %q", info.LabelSampleMethod, rpc.MethodGmailSampleLabels)
+	if info.LabelListMethod != rpc.MethodGmailListLabels {
+		t.Fatalf("info.LabelListMethod = %q, want %q", info.LabelListMethod, rpc.MethodGmailListLabels)
 	}
-	if info.LabelSampleQuery != "in:inbox" {
-		t.Fatalf("info.LabelSampleQuery = %q, want in:inbox", info.LabelSampleQuery)
+	if info.LabelListScope != "mailbox" {
+		t.Fatalf("info.LabelListScope = %q, want mailbox", info.LabelListScope)
 	}
-	if !containsString(info.Methods, rpc.MethodGmailSampleLabels) {
-		t.Fatalf("info.Methods = %#v, want gmail.sample_labels", info.Methods)
+	if !containsString(info.Methods, rpc.MethodGmailListLabels) {
+		t.Fatalf("info.Methods = %#v, want gmail.list_labels", info.Methods)
+	}
+}
+
+func TestGmailRuntimeSearchQueryDefaultsToAnywhere(t *testing.T) {
+	t.Parallel()
+
+	rt := &gmailRuntime{
+		policy: &policy.Policy{
+			VisibilityLabel: "donna",
+		},
+	}
+
+	tests := []struct {
+		name      string
+		userQuery string
+		want      string
+	}{
+		{
+			name:      "empty query",
+			userQuery: "",
+			want:      "(in:anywhere) (label:donna)",
+		},
+		{
+			name:      "plain query",
+			userQuery: "female",
+			want:      "(in:anywhere) (female) (label:donna)",
+		},
+		{
+			name:      "explicit mailbox scope",
+			userQuery: "in:sent female",
+			want:      "(in:sent female) (label:donna)",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := rt.searchQuery(tt.userQuery); got != tt.want {
+				t.Fatalf("searchQuery(%q) = %q, want %q", tt.userQuery, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1113,6 +1191,7 @@ func TestHandleGetAttachmentRejectsOversizedAttachmentBeforeDownload(t *testing.
 
 type fakeGmailService struct {
 	labels                 map[string]string
+	labelList              []gmailapi.Label
 	labelErr               error
 	searchThreadsResult    gmailapi.SearchThreadsResult
 	searchThreadPages      map[string]gmailapi.SearchThreadsResult
@@ -1150,6 +1229,11 @@ func (f *fakeGmailService) ListLabels(context.Context) ([]gmailapi.Label, error)
 	if f.labelErr != nil {
 		return nil, f.labelErr
 	}
+	if f.labelList != nil {
+		result := make([]gmailapi.Label, len(f.labelList))
+		copy(result, f.labelList)
+		return result, nil
+	}
 
 	names := make([]string, 0, len(f.labels))
 	for name := range f.labels {
@@ -1170,7 +1254,20 @@ func (f *fakeGmailService) ListLabels(context.Context) ([]gmailapi.Label, error)
 
 func (f *fakeGmailService) ListLabelNameToID(context.Context) (map[string]string, error) {
 	f.labelCalls++
-	return f.labels, f.labelErr
+	if f.labelErr != nil {
+		return nil, f.labelErr
+	}
+	if f.labels != nil {
+		return f.labels, nil
+	}
+	result := make(map[string]string, len(f.labelList))
+	for _, label := range f.labelList {
+		if label.ID == "" || label.Name == "" {
+			continue
+		}
+		result[strings.ToLower(label.Name)] = label.ID
+	}
+	return result, nil
 }
 
 func (f *fakeGmailService) SearchThreads(_ context.Context, query string, _ int64, pageToken string) (gmailapi.SearchThreadsResult, error) {

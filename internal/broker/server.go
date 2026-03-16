@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -24,12 +25,12 @@ import (
 
 const requestMaxBytes = 1 << 20
 const defaultSearchLimit = 20
+const defaultMailboxScopeQuery = "in:anywhere"
 const searchPageTokenPrefix = "sgp1:"
 
 const (
 	searchPageTokenVersion = 1
 	searchPageKindMessages = "messages"
-	searchPageKindLabels   = "labels"
 	searchPageKindThreads  = "threads"
 )
 
@@ -41,6 +42,10 @@ type searchPageCursor struct {
 	ReturnedIDs    []string `json:"returned_ids,omitempty"`
 	GmailPageToken string   `json:"gmail_page_token,omitempty"`
 }
+
+// Gmail mailbox operators are token-like, so a lightweight scan is enough to
+// avoid prepending the default scope when the caller already set one.
+var gmailMailboxScopePattern = regexp.MustCompile(`(?i)(^|[\s(])[-]?in:[^\s)]+`)
 
 // Dependencies allows tests to inject fake policy and Gmail clients.
 type Dependencies struct {
@@ -188,12 +193,12 @@ func (s *Server) dispatch(req rpc.Request) rpc.Response {
 			MaxSearchResults:   s.cfg.MaxSearchResults,
 			SearchQuerySyntax:  "gmail",
 			LabelQueryMode:     "name",
-			LabelSampleMethod:  rpc.MethodGmailSampleLabels,
-			LabelSampleQuery:   "in:inbox",
+			LabelListMethod:    rpc.MethodGmailListLabels,
+			LabelListScope:     "mailbox",
 			Methods: []string{
 				rpc.MethodSystemPing,
 				rpc.MethodSystemInfo,
-				rpc.MethodGmailSampleLabels,
+				rpc.MethodGmailListLabels,
 				rpc.MethodGmailSearchThreads,
 				rpc.MethodGmailSearchMessages,
 				rpc.MethodGmailGetMessage,
@@ -201,8 +206,8 @@ func (s *Server) dispatch(req rpc.Request) rpc.Response {
 				rpc.MethodGmailGetAttachment,
 			},
 		})
-	case rpc.MethodGmailSampleLabels:
-		return s.handleSampleLabels(req)
+	case rpc.MethodGmailListLabels:
+		return s.handleListLabels(req)
 	case rpc.MethodGmailSearchThreads:
 		return s.handleSearchThreads(req)
 	case rpc.MethodGmailSearchMessages:
@@ -321,10 +326,10 @@ func (s *Server) handleSearchThreads(req rpc.Request) rpc.Response {
 	})
 }
 
-func (s *Server) handleSampleLabels(req rpc.Request) rpc.Response {
-	var params rpc.GmailSampleLabelsParams
+func (s *Server) handleListLabels(req rpc.Request) rpc.Response {
+	var params rpc.GmailListLabelsParams
 	if err := rpc.DecodeParams(req.Params, &params); err != nil {
-		return rpc.NewError(req.ID, "invalid_params", fmt.Sprintf("invalid gmail.sample_labels params: %v", err), false)
+		return rpc.NewError(req.ID, "invalid_params", fmt.Sprintf("invalid gmail.list_labels params: %v", err), false)
 	}
 	if err := params.Validate(); err != nil {
 		return rpc.NewError(req.ID, "invalid_params", err.Error(), false)
@@ -333,34 +338,9 @@ func (s *Server) handleSampleLabels(req rpc.Request) rpc.Response {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rt, errResp := s.openGmailRuntime(ctx, req.ID)
+	rt, errResp := s.openGmailRuntimeWithLabelResolution(ctx, req.ID, false)
 	if errResp != nil {
 		return *errResp
-	}
-	if !rt.hasVisibleSearchScope() {
-		return rpc.NewSuccess(req.ID, rpc.GmailSampleLabelsResult{
-			Labels:              []rpc.LabelSummary{},
-			SampledMessageCount: 0,
-			NextPageToken:       "",
-		})
-	}
-
-	limit := normalizeSearchLimit(params.Limit, s.cfg.MaxSearchResults)
-	userQuery := strings.TrimSpace(params.Query)
-	if userQuery == "" {
-		userQuery = "in:inbox"
-	}
-	effectiveQuery := rt.searchQuery(userQuery)
-	visibleMessages, nextPageToken, errResp := s.searchVisibleMessages(ctx, req.ID, rt, searchPageKindLabels, effectiveQuery, params.PageToken, limit)
-	if errResp != nil {
-		return *errResp
-	}
-	if len(visibleMessages) == 0 {
-		return rpc.NewSuccess(req.ID, rpc.GmailSampleLabelsResult{
-			Labels:              []rpc.LabelSummary{},
-			SampledMessageCount: 0,
-			NextPageToken:       nextPageToken,
-		})
 	}
 
 	labels, err := rt.client.ListLabels(ctx)
@@ -368,10 +348,8 @@ func (s *Server) handleSampleLabels(req rpc.Request) rpc.Response {
 		return mapGmailError(req.ID, err)
 	}
 
-	return rpc.NewSuccess(req.ID, rpc.GmailSampleLabelsResult{
-		Labels:              buildVisibleLabelSummaries(visibleMessages, labels),
-		SampledMessageCount: len(visibleMessages),
-		NextPageToken:       nextPageToken,
+	return rpc.NewSuccess(req.ID, rpc.GmailListLabelsResult{
+		Labels: buildLabelInfos(labels),
 	})
 }
 
@@ -674,6 +652,10 @@ func (s *Server) handleGetAttachment(req rpc.Request) rpc.Response {
 }
 
 func (s *Server) openGmailRuntime(ctx context.Context, id string) (*gmailRuntime, *rpc.Response) {
+	return s.openGmailRuntimeWithLabelResolution(ctx, id, true)
+}
+
+func (s *Server) openGmailRuntimeWithLabelResolution(ctx context.Context, id string, resolveVisibilityLabel bool) (*gmailRuntime, *rpc.Response) {
 	pol, err := s.deps.LoadPolicy(s.cfg.PolicyPath, s.cfg.AccountEmail)
 	if err != nil {
 		resp := rpc.NewError(id, "internal_error", "failed to load broker policy", false)
@@ -692,7 +674,7 @@ func (s *Server) openGmailRuntime(ctx context.Context, id string) (*gmailRuntime
 		}
 	}
 
-	if pol != nil && strings.TrimSpace(pol.VisibilityLabel) != "" && strings.TrimSpace(pol.VisibilityLabelID) == "" {
+	if resolveVisibilityLabel && pol != nil && strings.TrimSpace(pol.VisibilityLabel) != "" && strings.TrimSpace(pol.VisibilityLabelID) == "" {
 		labelMap, err := client.ListLabelNameToID(ctx)
 		if err != nil {
 			resp := mapGmailError(id, err)
@@ -739,33 +721,60 @@ func (r *gmailRuntime) hasVisibleSearchScope() bool {
 }
 
 func (r *gmailRuntime) searchQuery(userQuery string) string {
-	userQuery = strings.TrimSpace(userQuery)
+	clauses := defaultSearchClauses(userQuery)
 	if r == nil || r.policy == nil {
-		return userQuery
+		return joinSearchClauses(clauses)
 	}
 
-	clauses := make([]string, 0, 2)
+	policyClauses := make([]string, 0, 2)
 	if clause := visibilityLabelSearchClause(r.policy.VisibilityLabel); clause != "" {
-		clauses = append(clauses, clause)
+		policyClauses = append(policyClauses, clause)
 	}
 	if r.policy.AllowOwnerSent {
-		clauses = append(clauses, "in:sent")
+		policyClauses = append(policyClauses, "in:sent")
+	}
+	switch len(policyClauses) {
+	case 0:
+	case 1:
+		clauses = append(clauses, policyClauses[0])
+	default:
+		clauses = append(clauses, strings.Join(policyClauses, " OR "))
+	}
+	return joinSearchClauses(clauses)
+}
+
+func defaultSearchClauses(userQuery string) []string {
+	userQuery = strings.TrimSpace(userQuery)
+	if userQuery == "" {
+		return []string{defaultMailboxScopeQuery}
+	}
+	if gmailMailboxScopePattern.MatchString(userQuery) {
+		return []string{userQuery}
+	}
+	return []string{defaultMailboxScopeQuery, userQuery}
+}
+
+func joinSearchClauses(clauses []string) string {
+	filtered := make([]string, 0, len(clauses))
+	for _, clause := range clauses {
+		clause = strings.TrimSpace(clause)
+		if clause == "" {
+			continue
+		}
+		filtered = append(filtered, clause)
 	}
 
-	switch len(clauses) {
+	switch len(filtered) {
 	case 0:
-		return userQuery
+		return ""
 	case 1:
-		if userQuery == "" {
-			return clauses[0]
-		}
-		return "(" + userQuery + ") (" + clauses[0] + ")"
+		return filtered[0]
 	default:
-		policyQuery := "(" + strings.Join(clauses, " OR ") + ")"
-		if userQuery == "" {
-			return policyQuery
+		wrapped := make([]string, 0, len(filtered))
+		for _, clause := range filtered {
+			wrapped = append(wrapped, "("+clause+")")
 		}
-		return "(" + userQuery + ") " + policyQuery
+		return strings.Join(wrapped, " ")
 	}
 }
 
@@ -856,58 +865,39 @@ func uniqueIDsExcluding(ids []string, excluded map[string]struct{}) []string {
 	return unique
 }
 
-func buildVisibleLabelSummaries(messages []*gmail.Message, labels []gmailapi.Label) []rpc.LabelSummary {
-	if len(messages) == 0 {
-		return []rpc.LabelSummary{}
+func buildLabelInfos(labels []gmailapi.Label) []rpc.LabelInfo {
+	if len(labels) == 0 {
+		return []rpc.LabelInfo{}
 	}
 
-	counts := make(map[string]int)
-	for _, message := range messages {
-		if message == nil {
-			continue
-		}
-		for _, labelID := range message.LabelIds {
-			labelID = strings.TrimSpace(labelID)
-			if labelID == "" {
-				continue
-			}
-			counts[labelID]++
-		}
-	}
-	if len(counts) == 0 {
-		return []rpc.LabelSummary{}
-	}
-
-	labelByID := make(map[string]gmailapi.Label, len(labels))
+	result := make([]rpc.LabelInfo, 0, len(labels))
 	for _, label := range labels {
 		labelID := strings.TrimSpace(label.ID)
-		if labelID == "" {
+		labelName := strings.TrimSpace(label.Name)
+		if labelID == "" || labelName == "" {
 			continue
 		}
-		labelByID[labelID] = label
-	}
-
-	result := make([]rpc.LabelSummary, 0, len(counts))
-	for labelID, count := range counts {
-		summary := rpc.LabelSummary{
-			LabelID:      labelID,
-			MessageCount: count,
-		}
-		if label, ok := labelByID[labelID]; ok {
-			summary.LabelName = label.Name
-			summary.LabelType = label.Type
-		}
-		result = append(result, summary)
+		result = append(result, rpc.LabelInfo{
+			LabelID:               labelID,
+			LabelName:             labelName,
+			LabelType:             strings.TrimSpace(label.Type),
+			LabelListVisibility:   strings.TrimSpace(label.LabelListVisibility),
+			MessageListVisibility: strings.TrimSpace(label.MessageListVisibility),
+			MessagesTotal:         label.MessagesTotal,
+			MessagesUnread:        label.MessagesUnread,
+			ThreadsTotal:          label.ThreadsTotal,
+			ThreadsUnread:         label.ThreadsUnread,
+		})
 	}
 
 	sort.Slice(result, func(i, j int) bool {
-		if result[i].MessageCount != result[j].MessageCount {
-			return result[i].MessageCount > result[j].MessageCount
-		}
 		leftName := strings.ToLower(strings.TrimSpace(result[i].LabelName))
 		rightName := strings.ToLower(strings.TrimSpace(result[j].LabelName))
 		if leftName != rightName {
 			return leftName < rightName
+		}
+		if result[i].LabelType != result[j].LabelType {
+			return result[i].LabelType < result[j].LabelType
 		}
 		return result[i].LabelID < result[j].LabelID
 	})

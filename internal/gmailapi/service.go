@@ -35,9 +35,15 @@ type Service interface {
 
 // Label is the normalized Gmail label metadata the broker uses for policy and discovery.
 type Label struct {
-	ID   string
-	Name string
-	Type string
+	ID                    string
+	Name                  string
+	Type                  string
+	LabelListVisibility   string
+	MessageListVisibility string
+	MessagesTotal         int64
+	MessagesUnread        int64
+	ThreadsTotal          int64
+	ThreadsUnread         int64
 }
 
 // SearchThreadsResult is the broker-side search page returned from Gmail.
@@ -127,12 +133,15 @@ func (c *Client) ProfileEmail(ctx context.Context) (string, error) {
 	return strings.TrimSpace(profile.EmailAddress), nil
 }
 
-// ListLabelNameToID returns a lowercased name-to-ID map for label allowlists.
+// ListLabels returns the Gmail mailbox's direct label metadata.
 func (c *Client) ListLabels(ctx context.Context) ([]Label, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	resp, err := c.svc.Users.Labels.List("me").Context(ctx).Do()
+	resp, err := c.svc.Users.Labels.List("me").
+		Context(ctx).
+		Fields("labels(id,name,type,labelListVisibility,messageListVisibility,messagesTotal,messagesUnread,threadsTotal,threadsUnread)").
+		Do()
 	if err != nil {
 		return nil, fmt.Errorf("list gmail labels: %w", err)
 	}
@@ -143,9 +152,15 @@ func (c *Client) ListLabels(ctx context.Context) ([]Label, error) {
 			continue
 		}
 		result = append(result, Label{
-			ID:   strings.TrimSpace(label.Id),
-			Name: strings.TrimSpace(label.Name),
-			Type: strings.ToLower(strings.TrimSpace(label.Type)),
+			ID:                    strings.TrimSpace(label.Id),
+			Name:                  strings.TrimSpace(label.Name),
+			Type:                  strings.ToLower(strings.TrimSpace(label.Type)),
+			LabelListVisibility:   strings.TrimSpace(label.LabelListVisibility),
+			MessageListVisibility: strings.TrimSpace(label.MessageListVisibility),
+			MessagesTotal:         label.MessagesTotal,
+			MessagesUnread:        label.MessagesUnread,
+			ThreadsTotal:          label.ThreadsTotal,
+			ThreadsUnread:         label.ThreadsUnread,
 		})
 	}
 	return result, nil
