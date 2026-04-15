@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"github.com/jimmingcheng/safe-gmail/internal/gmailapi"
 	"github.com/jimmingcheng/safe-gmail/internal/rpc"
 )
+
+var errFlagAfterQuery = errors.New("flags must come before the query")
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -253,13 +256,18 @@ func runSearch(socketPath string, jsonOut bool, args []string) int {
 		fs.Usage()
 		return 2
 	}
+	query, err := joinQueryArgs(fs.Args())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s; use: safe-gmail search --limit 50 'query'\n", err)
+		return 2
+	}
 	if err := requireSocket(socketPath); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
 	params, err := json.Marshal(rpc.GmailSearchMessagesParams{
-		Query:              strings.Join(fs.Args(), " "),
+		Query:              query,
 		Limit:              *limit,
 		PageToken:          *pageToken,
 		IncludeBody:        *includeBody,
@@ -421,13 +429,18 @@ func runThreadSearch(socketPath string, jsonOut bool, args []string) int {
 		fs.Usage()
 		return 2
 	}
+	query, err := joinQueryArgs(fs.Args())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s; use: safe-gmail thread search --limit 50 'query'\n", err)
+		return 2
+	}
 	if err := requireSocket(socketPath); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
 	params, err := json.Marshal(rpc.GmailSearchThreadsParams{
-		Query:     strings.Join(fs.Args(), " "),
+		Query:     query,
 		Limit:     *limit,
 		PageToken: *pageToken,
 	})
@@ -763,6 +776,18 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func joinQueryArgs(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "--") {
+			return "", fmt.Errorf("%w: %s", errFlagAfterQuery, arg)
+		}
+	}
+	return strings.Join(args, " "), nil
 }
 
 func usage(w *os.File) {
