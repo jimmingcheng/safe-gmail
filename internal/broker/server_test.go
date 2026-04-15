@@ -537,8 +537,8 @@ func TestHandleSearchMessagesIncludesAttachmentsWithoutBodies(t *testing.T) {
 	if len(result.Messages) != 2 {
 		t.Fatalf("len(result.Messages) = %d, want 2", len(result.Messages))
 	}
-	if len(result.Messages[0].Attachments) != 1 || result.Messages[0].Attachments[0].AttachmentID != "att-1" {
-		t.Fatalf("result.Messages[0].Attachments = %#v, want [att-1]", result.Messages[0].Attachments)
+	if len(result.Messages[0].Attachments) != 1 || result.Messages[0].Attachments[0].AttachmentID != "sg-part:1" {
+		t.Fatalf("result.Messages[0].Attachments = %#v, want [sg-part:1]", result.Messages[0].Attachments)
 	}
 	if result.Messages[0].BodyTruncated != nil || result.Messages[0].BodyText != "" {
 		t.Fatalf("result.Messages[0] body = %#v, want no body fields", result.Messages[0])
@@ -1187,7 +1187,7 @@ func TestHandleGetAttachmentReturnsContent(t *testing.T) {
 		V:      rpc.Version1,
 		ID:     "req-attachment",
 		Method: rpc.MethodGmailGetAttachment,
-		Params: []byte(`{"message_id":"msg-1","attachment_id":"att-1"}`),
+		Params: []byte(`{"message_id":"msg-1","attachment_id":"sg-part:1"}`),
 	})
 	if !resp.OK {
 		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
@@ -1197,8 +1197,8 @@ func TestHandleGetAttachmentReturnsContent(t *testing.T) {
 	if err := decodeResult(resp.Result, &result); err != nil {
 		t.Fatalf("decodeResult() error = %v", err)
 	}
-	if result.Attachment.AttachmentID != "att-1" {
-		t.Fatalf("result.Attachment.AttachmentID = %q, want att-1", result.Attachment.AttachmentID)
+	if result.Attachment.AttachmentID != "sg-part:1" {
+		t.Fatalf("result.Attachment.AttachmentID = %q, want sg-part:1", result.Attachment.AttachmentID)
 	}
 	if result.Attachment.Filename != "report.pdf" {
 		t.Fatalf("result.Attachment.Filename = %q, want report.pdf", result.Attachment.Filename)
@@ -1208,6 +1208,52 @@ func TestHandleGetAttachmentReturnsContent(t *testing.T) {
 	}
 	if len(service.attachmentCalls) != 1 || service.attachmentCalls[0] != attachmentKey("msg-1", "att-1") {
 		t.Fatalf("attachmentCalls = %#v, want [msg-1:att-1]", service.attachmentCalls)
+	}
+}
+
+func TestHandleGetAttachmentUsesCurrentGmailAttachmentTokenForStableBrokerID(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeGmailService{
+		metadata: map[string]*gmail.Message{
+			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+		},
+		full: map[string]*gmail.Message{
+			"msg-1": testMessageWithAttachment("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full", "report.pdf", "application/pdf", "att-current", 5),
+		},
+		threadErr:     map[string]error{},
+		metadataErr:   map[string]error{},
+		fullErr:       map[string]error{},
+		attachmentErr: map[string]error{},
+		attachmentData: map[string][]byte{
+			attachmentKey("msg-1", "att-current"): []byte("hello"),
+		},
+	}
+
+	srv, err := NewWithDeps(testConfig(), Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return testResolvedVisibilityPolicy(), nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithDeps() error = %v", err)
+	}
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-attachment-stable",
+		Method: rpc.MethodGmailGetAttachment,
+		Params: []byte(`{"message_id":"msg-1","attachment_id":"sg-part:1"}`),
+	})
+	if !resp.OK {
+		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
+	}
+
+	if got, want := service.attachmentCalls, []string{attachmentKey("msg-1", "att-current")}; fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", want) {
+		t.Fatalf("attachmentCalls = %#v, want %#v", got, want)
 	}
 }
 
@@ -1298,7 +1344,7 @@ func TestHandleGetAttachmentRejectsOversizedAttachmentBeforeDownload(t *testing.
 		V:      rpc.Version1,
 		ID:     "req-attachment-big",
 		Method: rpc.MethodGmailGetAttachment,
-		Params: []byte(`{"message_id":"msg-1","attachment_id":"att-big"}`),
+		Params: []byte(`{"message_id":"msg-1","attachment_id":"sg-part:1"}`),
 	})
 	if resp.OK {
 		t.Fatalf("dispatch() ok = true, want false")
@@ -1347,7 +1393,7 @@ func TestHandleGetAttachmentRejectsAttachmentsAboveTransportCap(t *testing.T) {
 		V:      rpc.Version1,
 		ID:     "req-attachment-cap",
 		Method: rpc.MethodGmailGetAttachment,
-		Params: []byte(`{"message_id":"msg-cap","attachment_id":"att-cap"}`),
+		Params: []byte(`{"message_id":"msg-cap","attachment_id":"sg-part:1"}`),
 	})
 	if resp.OK {
 		t.Fatalf("dispatch() ok = true, want false")

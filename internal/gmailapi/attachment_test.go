@@ -24,7 +24,7 @@ func TestFindAttachmentReturnsMatchingMetadata(t *testing.T) {
 		},
 	}
 
-	attachment, ok := FindAttachment(part, "att-1")
+	attachment, ok := FindAttachment(part, "sg-part:0")
 	if !ok {
 		t.Fatal("FindAttachment() ok = false, want true")
 	}
@@ -33,6 +33,9 @@ func TestFindAttachmentReturnsMatchingMetadata(t *testing.T) {
 	}
 	if attachment.Meta.Size != 123 {
 		t.Fatalf("attachment.Meta.Size = %d, want 123", attachment.Meta.Size)
+	}
+	if attachment.GmailID() != "att-1" {
+		t.Fatalf("attachment.GmailID() = %q, want att-1", attachment.GmailID())
 	}
 }
 

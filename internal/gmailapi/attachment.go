@@ -11,11 +11,13 @@ import (
 )
 
 const inlineAttachmentIDPrefix = "sg-inline:"
+const partAttachmentIDPrefix = "sg-part:"
 
 // AttachmentRef is one broker-visible attachment plus enough information to
 // resolve its bytes without exposing Gmail internals on the wire.
 type AttachmentRef struct {
 	Meta           rpc.AttachmentMeta
+	gmailID        string
 	inlineBodyData string
 }
 
@@ -23,6 +25,11 @@ type AttachmentRef struct {
 // message payload instead of requiring a Gmail attachments.get round-trip.
 func (a AttachmentRef) IsInline() bool {
 	return strings.TrimSpace(a.inlineBodyData) != ""
+}
+
+// GmailID returns the current Gmail API attachment token for non-inline attachments.
+func (a AttachmentRef) GmailID() string {
+	return strings.TrimSpace(a.gmailID)
 }
 
 // Data decodes the attachment bytes for inline payload-backed attachments.
@@ -87,16 +94,16 @@ func attachmentRef(part *gmail.MessagePart, path []int) (AttachmentRef, bool) {
 	}
 
 	body := part.Body
-	attachmentID := strings.TrimSpace(body.AttachmentId)
 	ref := AttachmentRef{
 		Meta: rpc.AttachmentMeta{
-			AttachmentID: attachmentID,
+			AttachmentID: partAttachmentID(path),
 			Filename:     attachmentFilename(part),
 			MimeType:     strings.TrimSpace(part.MimeType),
 			Size:         body.Size,
 		},
+		gmailID: strings.TrimSpace(body.AttachmentId),
 	}
-	if attachmentID == "" {
+	if ref.gmailID == "" {
 		ref.Meta.AttachmentID = inlineAttachmentID(path)
 		ref.inlineBodyData = strings.TrimSpace(body.Data)
 	}
@@ -147,10 +154,20 @@ func inlineAttachmentID(path []int) string {
 	if len(path) == 0 {
 		return inlineAttachmentIDPrefix + "root"
 	}
+	return inlineAttachmentIDPrefix + joinPartPath(path)
+}
 
+func partAttachmentID(path []int) string {
+	if len(path) == 0 {
+		return partAttachmentIDPrefix + "root"
+	}
+	return partAttachmentIDPrefix + joinPartPath(path)
+}
+
+func joinPartPath(path []int) string {
 	parts := make([]string, 0, len(path))
 	for _, idx := range path {
 		parts = append(parts, strconv.Itoa(idx))
 	}
-	return inlineAttachmentIDPrefix + strings.Join(parts, ".")
+	return strings.Join(parts, ".")
 }

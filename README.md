@@ -259,6 +259,7 @@ Practical guidance for agents:
 - search queries use Gmail query syntax
 - to scan many visible messages for attachments without downloading bytes, use `safe-gmail --json search --attachments "<query>"`
 - in JSON mode, inspect `result.messages[].attachments[]` for `attachment_id`, filename, MIME type, and size
+- `attachment_id` is a broker-owned stable ID that can be passed back to `attachment get`; it is not the raw Gmail attachment token
 - use `safe-gmail attachment get --output PATH <message-id> <attachment-id>` only for attachments you actually need
 - label listing is mailbox-wide and not filtered by the broker visibility policy
 - if you omit an `in:` operator, search and thread search default to `in:anywhere`, so archived mail is included by default

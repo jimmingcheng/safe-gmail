@@ -61,11 +61,82 @@ func TestBuildMessageDetailShapesBodyAndAttachments(t *testing.T) {
 	if detail.BodyTruncated == nil || !*detail.BodyTruncated {
 		t.Fatalf("detail.BodyTruncated = %#v, want true", detail.BodyTruncated)
 	}
-	if len(detail.Attachments) != 1 || detail.Attachments[0].AttachmentID != "att-1" {
+	if len(detail.Attachments) != 1 || detail.Attachments[0].AttachmentID != "sg-part:1" {
 		t.Fatalf("detail.Attachments = %#v, want one attachment", detail.Attachments)
 	}
 	if detail.ReceivedAt == "" {
 		t.Fatal("detail.ReceivedAt is empty")
+	}
+}
+
+func TestBuildMessageDetailUsesStablePartIDsForDownloadedAttachments(t *testing.T) {
+	t.Parallel()
+
+	first := &gmail.Message{
+		Id:       "msg-1",
+		ThreadId: "thread-1",
+		Payload: &gmail.MessagePart{
+			Headers: []*gmail.MessagePartHeader{
+				{Name: "From", Value: "Alice <alice@example.com>"},
+				{Name: "To", Value: "Owner <owner@example.com>"},
+				{Name: "Subject", Value: "Status"},
+			},
+			Parts: []*gmail.MessagePart{
+				{
+					MimeType: "text/plain",
+					Body:     &gmail.MessagePartBody{Data: encodeBody("hello")},
+				},
+				{
+					Filename: "report.pdf",
+					MimeType: "application/pdf",
+					Body: &gmail.MessagePartBody{
+						AttachmentId: "att-first",
+						Size:         12345,
+					},
+				},
+			},
+		},
+	}
+	second := &gmail.Message{
+		Id:       "msg-1",
+		ThreadId: "thread-1",
+		Payload: &gmail.MessagePart{
+			Headers: []*gmail.MessagePartHeader{
+				{Name: "From", Value: "Alice <alice@example.com>"},
+				{Name: "To", Value: "Owner <owner@example.com>"},
+				{Name: "Subject", Value: "Status"},
+			},
+			Parts: []*gmail.MessagePart{
+				{
+					MimeType: "text/plain",
+					Body:     &gmail.MessagePartBody{Data: encodeBody("hello")},
+				},
+				{
+					Filename: "report.pdf",
+					MimeType: "application/pdf",
+					Body: &gmail.MessagePartBody{
+						AttachmentId: "att-second",
+						Size:         12345,
+					},
+				},
+			},
+		},
+	}
+
+	firstDetail, err := BuildMessageDetail(first, false, 1024)
+	if err != nil {
+		t.Fatalf("BuildMessageDetail(first) error = %v", err)
+	}
+	secondDetail, err := BuildMessageDetail(second, false, 1024)
+	if err != nil {
+		t.Fatalf("BuildMessageDetail(second) error = %v", err)
+	}
+
+	if got, want := firstDetail.Attachments[0].AttachmentID, "sg-part:1"; got != want {
+		t.Fatalf("firstDetail.Attachments[0].AttachmentID = %q, want %q", got, want)
+	}
+	if got, want := secondDetail.Attachments[0].AttachmentID, firstDetail.Attachments[0].AttachmentID; got != want {
+		t.Fatalf("secondDetail.Attachments[0].AttachmentID = %q, want %q", got, want)
 	}
 }
 

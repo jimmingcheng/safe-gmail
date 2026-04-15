@@ -507,7 +507,7 @@ Response:
     "body_truncated": false,
     "attachments": [
       {
-        "attachment_id": "att-1",
+        "attachment_id": "sg-part:1",
         "filename": "report.pdf",
         "mime_type": "application/pdf",
         "size": 12345
@@ -749,9 +749,11 @@ Request:
 ```json
 {
   "message_id": "msg-1",
-  "attachment_id": "att-1"
+  "attachment_id": "sg-part:1"
 }
 ```
+
+`attachment_id` is a broker-owned stable ID, not a raw Gmail attachment token. It is only meaningful together with the corresponding `message_id`.
 
 Response options:
 
@@ -768,7 +770,7 @@ Response:
 ```json
 {
   "attachment": {
-    "attachment_id": "att-1",
+    "attachment_id": "sg-part:1",
     "filename": "report.pdf",
     "mime_type": "application/pdf",
     "size": 12345,

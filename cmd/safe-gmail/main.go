@@ -157,7 +157,7 @@ func runGet(socketPath string, jsonOut bool, args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		printCommandUsage(os.Stderr, "safe-gmail get [--body] <message-id>",
-			"Fetches one visible message. This always prints one line per attachment as attachment<TAB><attachment-id><TAB><filename><TAB><mime-type><TAB><size>. For a reliable attachment workflow: search for a message_id, run get <message-id> to collect attachment_id values, then run attachment get <message-id> <attachment-id>.",
+			"Fetches one visible message. This always prints one line per attachment as attachment<TAB><attachment-id><TAB><filename><TAB><mime-type><TAB><size>. attachment_id values are broker-owned stable IDs that can be reused with attachment get.",
 			fs)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -480,7 +480,7 @@ func runThreadGet(socketPath string, jsonOut bool, args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		printCommandUsage(os.Stderr, "safe-gmail thread get [--bodies] <thread-id>",
-			"Fetches one visible thread. Without --bodies, output is message summaries only. With --bodies, each visible message includes attachment lines in the same format as get, so an agent can collect attachment_id values and then call attachment get.",
+			"Fetches one visible thread. Without --bodies, output is message summaries only. With --bodies, each visible message includes attachment lines in the same format as get, so an agent can collect stable attachment_id values and then call attachment get.",
 			fs)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -565,7 +565,7 @@ func runAttachment(socketPath string, jsonOut bool, args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		printCommandUsage(os.Stderr, "safe-gmail attachment get [--output PATH] <message-id> <attachment-id>",
-			"Downloads one attachment from one visible message. Obtain attachment_id from get <message-id> or thread get --bodies <thread-id>. If --output is omitted, raw attachment bytes are written to stdout; for agent workflows, prefer --output PATH or --json.",
+			"Downloads one attachment from one visible message. Obtain attachment_id from search --attachments, get <message-id>, or thread get --bodies <thread-id>. These are broker-owned stable IDs. If --output is omitted, raw attachment bytes are written to stdout; for agent workflows, prefer --output PATH or --json.",
 			fs)
 	}
 	if err := fs.Parse(args[1:]); err != nil {
@@ -782,6 +782,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  Query labels by name, for example: label:vip or label:\"Kids/School\".")
 	fmt.Fprintln(w, "  labels list is mailbox-wide and is not filtered by the broker visibility policy.")
 	fmt.Fprintln(w, "  Bulk attachment workflow for agents: search --attachments -> attachment get <message-id> <attachment-id>.")
+	fmt.Fprintln(w, "  attachment_id values are broker-owned stable IDs, not raw Gmail attachment tokens.")
 	fmt.Fprintln(w, "  get always prints attachment lines with attachment_id values when attachments are visible.")
 	fmt.Fprintln(w, "  search without --body or --attachments does not include attachment_id values.")
 	fmt.Fprintln(w, "  attachment get writes raw bytes to stdout unless you pass --output PATH.")

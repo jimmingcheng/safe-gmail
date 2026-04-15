@@ -645,7 +645,7 @@ func (s *Server) handleGetAttachment(req rpc.Request) rpc.Response {
 			return rpc.NewError(req.ID, "internal_error", "failed to decode attachment content", false)
 		}
 	} else {
-		data, err = rt.client.GetAttachmentData(ctx, params.MessageID, params.AttachmentID)
+		data, err = rt.client.GetAttachmentData(ctx, params.MessageID, attachment.GmailID())
 		if err != nil {
 			return mapGmailError(req.ID, err)
 		}

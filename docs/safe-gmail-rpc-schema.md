@@ -362,7 +362,7 @@ Success result:
 
 ```json
 {
-  "attachment_id": "att-1",
+  "attachment_id": "sg-part:1",
   "filename": "report.pdf",
   "mime_type": "application/pdf",
   "size": 12345
@@ -372,7 +372,8 @@ Success result:
 Fields:
 
 - `attachment_id`
-  - Gmail attachment ID
+  - broker-owned stable attachment ID
+  - only meaningful together with its `message_id`
 - `filename`
   - filename as presented to user
 - `mime_type`
@@ -415,7 +416,7 @@ Fields:
   "body_truncated": false,
   "attachments": [
     {
-      "attachment_id": "att-1",
+      "attachment_id": "sg-part:1",
       "filename": "report.pdf",
       "mime_type": "application/pdf",
       "size": 12345
@@ -715,7 +716,7 @@ Success result:
     "body_truncated": false,
     "attachments": [
       {
-        "attachment_id": "att-1",
+        "attachment_id": "sg-part:1",
         "filename": "report.pdf",
         "mime_type": "application/pdf",
         "size": 12345
@@ -1112,7 +1113,7 @@ Request params:
 ```json
 {
   "message_id": "msg-1",
-  "attachment_id": "att-1"
+  "attachment_id": "sg-part:1"
 }
 ```
 
@@ -1124,13 +1125,15 @@ Fields:
 - `attachment_id`
   - required
   - string
+  - broker-owned stable attachment ID obtained from message detail or search detail
+  - scoped to the referenced `message_id`
 
 Success result:
 
 ```json
 {
   "attachment": {
-    "attachment_id": "att-1",
+    "attachment_id": "sg-part:1",
     "filename": "report.pdf",
     "mime_type": "application/pdf",
     "size": 12345,
