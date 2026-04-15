@@ -67,7 +67,7 @@ func BuildMessageDetail(msg *gmail.Message, includeBody bool, maxBodyBytes int) 
 
 	detail := rpc.MessageDetail{
 		MessageSummary: summary,
-		Attachments:    collectAttachments(msg.Payload),
+		Attachments:    nonNilAttachments(collectAttachments(msg.Payload)),
 	}
 
 	if includeBody {
@@ -119,42 +119,26 @@ func findPartBody(part *gmail.MessagePart, mimeType string) string {
 }
 
 func decodeBody(data string) (string, error) {
+	decoded, err := decodeBase64Data(data)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
+func decodeBase64Data(data string) ([]byte, error) {
 	data = strings.TrimSpace(data)
 	if data == "" {
-		return "", nil
+		return nil, nil
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(data)
 	if err != nil {
 		decoded, err = base64.URLEncoding.DecodeString(data)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	return string(decoded), nil
-}
-
-func collectAttachments(part *gmail.MessagePart) []rpc.AttachmentMeta {
-	if part == nil {
-		return nil
-	}
-
-	var result []rpc.AttachmentMeta
-	if part.Body != nil && part.Body.AttachmentId != "" {
-		filename := strings.TrimSpace(part.Filename)
-		if filename == "" {
-			filename = "attachment"
-		}
-		result = append(result, rpc.AttachmentMeta{
-			AttachmentID: part.Body.AttachmentId,
-			Filename:     filename,
-			MimeType:     part.MimeType,
-			Size:         part.Body.Size,
-		})
-	}
-	for _, child := range part.Parts {
-		result = append(result, collectAttachments(child)...)
-	}
-	return result
+	return decoded, nil
 }
 
 func receivedAt(msg *gmail.Message) string {
@@ -198,6 +182,13 @@ func truncateUTF8(value string, maxBytes int) (string, bool) {
 func nonNilStrings(values []string) []string {
 	if len(values) == 0 {
 		return []string{}
+	}
+	return values
+}
+
+func nonNilAttachments(values []rpc.AttachmentMeta) []rpc.AttachmentMeta {
+	if len(values) == 0 {
+		return []rpc.AttachmentMeta{}
 	}
 	return values
 }

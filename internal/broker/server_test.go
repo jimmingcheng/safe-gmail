@@ -481,6 +481,74 @@ func TestHandleSearchMessagesStopsOnRepeatedNextPageToken(t *testing.T) {
 	if len(service.metadataCalls) != 1 || service.metadataCalls[0] != "msg-1" {
 		t.Fatalf("metadataCalls = %#v, want [msg-1]", service.metadataCalls)
 	}
+	if len(service.fullCalls) != 0 {
+		t.Fatalf("fullCalls = %#v, want none", service.fullCalls)
+	}
+}
+
+func TestHandleSearchMessagesIncludesAttachmentsWithoutBodies(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeGmailService{
+		searchResult: gmailapi.SearchMessagesResult{
+			Messages: []*gmail.Message{
+				{Id: "msg-1", ThreadId: "thread-1"},
+				{Id: "msg-2", ThreadId: "thread-2"},
+			},
+		},
+		metadata: map[string]*gmail.Message{
+			"msg-1": testMessage("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+			"msg-2": testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+		},
+		full: map[string]*gmail.Message{
+			"msg-1": testMessageWithAttachment("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full body", "report.pdf", "application/pdf", "att-1", 5),
+			"msg-2": testMessage("msg-2", "thread-2", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full body"),
+		},
+		metadataErr: map[string]error{},
+		fullErr:     map[string]error{},
+	}
+
+	srv, err := NewWithDeps(testConfig(), Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return testResolvedVisibilityPolicy(), nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithDeps() error = %v", err)
+	}
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-search-attachments",
+		Method: rpc.MethodGmailSearchMessages,
+		Params: []byte(`{"query":"has:attachment","include_attachments":true,"limit":2}`),
+	})
+	if !resp.OK {
+		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
+	}
+
+	var result rpc.GmailSearchMessagesResultDetail
+	if err := decodeResult(resp.Result, &result); err != nil {
+		t.Fatalf("decodeResult() error = %v", err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("len(result.Messages) = %d, want 2", len(result.Messages))
+	}
+	if len(result.Messages[0].Attachments) != 1 || result.Messages[0].Attachments[0].AttachmentID != "att-1" {
+		t.Fatalf("result.Messages[0].Attachments = %#v, want [att-1]", result.Messages[0].Attachments)
+	}
+	if result.Messages[0].BodyTruncated != nil || result.Messages[0].BodyText != "" {
+		t.Fatalf("result.Messages[0] body = %#v, want no body fields", result.Messages[0])
+	}
+	if len(result.Messages[1].Attachments) != 0 {
+		t.Fatalf("result.Messages[1].Attachments = %#v, want empty", result.Messages[1].Attachments)
+	}
+	if len(service.fullCalls) != 2 || service.fullCalls[0] != "msg-1" || service.fullCalls[1] != "msg-2" {
+		t.Fatalf("fullCalls = %#v, want [msg-1 msg-2]", service.fullCalls)
+	}
 }
 
 func TestHandleSearchMessagesDeduplicatesReturnedIDsAcrossBrokerPages(t *testing.T) {
@@ -1143,6 +1211,60 @@ func TestHandleGetAttachmentReturnsContent(t *testing.T) {
 	}
 }
 
+func TestHandleGetAttachmentReturnsInlineContentWithoutGmailFetch(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeGmailService{
+		metadata: map[string]*gmail.Message{
+			"msg-inline": testMessage("msg-inline", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+		},
+		full: map[string]*gmail.Message{
+			"msg-inline": testMessageWithInlineAttachment("msg-inline", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full", "report.pdf", "application/pdf", "inline-bytes"),
+		},
+		threadErr:      map[string]error{},
+		metadataErr:    map[string]error{},
+		fullErr:        map[string]error{},
+		attachmentErr:  map[string]error{},
+		attachmentData: map[string][]byte{},
+	}
+
+	srv, err := NewWithDeps(testConfig(), Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return testResolvedVisibilityPolicy(), nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithDeps() error = %v", err)
+	}
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-inline-attachment",
+		Method: rpc.MethodGmailGetAttachment,
+		Params: []byte(`{"message_id":"msg-inline","attachment_id":"sg-inline:1"}`),
+	})
+	if !resp.OK {
+		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
+	}
+
+	var result rpc.GmailGetAttachmentResult
+	if err := decodeResult(resp.Result, &result); err != nil {
+		t.Fatalf("decodeResult() error = %v", err)
+	}
+	if result.Attachment.AttachmentID != "sg-inline:1" {
+		t.Fatalf("result.Attachment.AttachmentID = %q, want sg-inline:1", result.Attachment.AttachmentID)
+	}
+	if result.Attachment.ContentBase64 != base64.StdEncoding.EncodeToString([]byte("inline-bytes")) {
+		t.Fatalf("result.Attachment.ContentBase64 = %q, want base64 inline-bytes", result.Attachment.ContentBase64)
+	}
+	if len(service.attachmentCalls) != 0 {
+		t.Fatalf("attachmentCalls = %#v, want none", service.attachmentCalls)
+	}
+}
+
 func TestHandleGetAttachmentRejectsOversizedAttachmentBeforeDownload(t *testing.T) {
 	t.Parallel()
 
@@ -1177,6 +1299,55 @@ func TestHandleGetAttachmentRejectsOversizedAttachmentBeforeDownload(t *testing.
 		ID:     "req-attachment-big",
 		Method: rpc.MethodGmailGetAttachment,
 		Params: []byte(`{"message_id":"msg-1","attachment_id":"att-big"}`),
+	})
+	if resp.OK {
+		t.Fatalf("dispatch() ok = true, want false")
+	}
+	if resp.Error == nil || resp.Error.Code != "too_large" {
+		t.Fatalf("resp.Error = %#v, want too_large", resp.Error)
+	}
+	if len(service.attachmentCalls) != 0 {
+		t.Fatalf("attachmentCalls = %#v, want none", service.attachmentCalls)
+	}
+}
+
+func TestHandleGetAttachmentRejectsAttachmentsAboveTransportCap(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.MaxAttachmentBytes = transportSafeAttachmentBytes + 1024
+
+	service := &fakeGmailService{
+		metadata: map[string]*gmail.Message{
+			"msg-cap": testMessage("msg-cap", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "meta"),
+		},
+		full: map[string]*gmail.Message{
+			"msg-cap": testMessageWithAttachment("msg-cap", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "full", "archive.zip", "application/zip", "att-cap", transportSafeAttachmentBytes+1),
+		},
+		threadErr:      map[string]error{},
+		metadataErr:    map[string]error{},
+		fullErr:        map[string]error{},
+		attachmentErr:  map[string]error{},
+		attachmentData: map[string][]byte{},
+	}
+
+	srv, err := NewWithDeps(cfg, Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return testResolvedVisibilityPolicy(), nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithDeps() error = %v", err)
+	}
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-attachment-cap",
+		Method: rpc.MethodGmailGetAttachment,
+		Params: []byte(`{"message_id":"msg-cap","attachment_id":"att-cap"}`),
 	})
 	if resp.OK {
 		t.Fatalf("dispatch() ok = true, want false")
@@ -1400,6 +1571,19 @@ func testMessageWithAttachment(id, threadID, from string, to []string, labels []
 		Body: &gmail.MessagePartBody{
 			AttachmentId: attachmentID,
 			Size:         attachmentSize,
+		},
+	})
+	return msg
+}
+
+func testMessageWithInlineAttachment(id, threadID, from string, to []string, labels []string, body, filename, mimeType, attachmentBody string) *gmail.Message {
+	msg := testMessage(id, threadID, from, to, labels, body)
+	msg.Payload.Parts = append(msg.Payload.Parts, &gmail.MessagePart{
+		Filename: filename,
+		MimeType: mimeType,
+		Body: &gmail.MessagePartBody{
+			Data: base64.RawURLEncoding.EncodeToString([]byte(attachmentBody)),
+			Size: int64(len(attachmentBody)),
 		},
 	})
 	return msg

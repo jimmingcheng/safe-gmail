@@ -27,6 +27,7 @@ const requestMaxBytes = 1 << 20
 const defaultSearchLimit = 20
 const defaultMailboxScopeQuery = "in:anywhere"
 const searchPageTokenPrefix = "sgp1:"
+const transportSafeAttachmentBytes = 23 * 1024 * 1024
 
 const (
 	searchPageTokenVersion = 1
@@ -189,7 +190,7 @@ func (s *Server) dispatch(req rpc.Request) rpc.Response {
 			Instance:           s.cfg.Instance,
 			AccountEmail:       s.cfg.AccountEmail,
 			MaxBodyBytes:       s.cfg.MaxBodyBytes,
-			MaxAttachmentBytes: s.cfg.MaxAttachmentBytes,
+			MaxAttachmentBytes: s.maxAttachmentBytes(),
 			MaxSearchResults:   s.cfg.MaxSearchResults,
 			SearchQuerySyntax:  "gmail",
 			LabelQueryMode:     "name",
@@ -481,8 +482,9 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 	if errResp != nil {
 		return *errResp
 	}
+	wantDetail := params.IncludeBody || params.IncludeAttachments
 	if !rt.hasVisibleSearchScope() {
-		if params.IncludeBody {
+		if wantDetail {
 			return rpc.NewSuccess(req.ID, rpc.GmailSearchMessagesResultDetail{
 				Messages:      []rpc.MessageDetail{},
 				NextPageToken: "",
@@ -501,14 +503,14 @@ func (s *Server) handleSearchMessages(req rpc.Request) rpc.Response {
 		return *errResp
 	}
 
-	if params.IncludeBody {
+	if wantDetail {
 		messages := make([]rpc.MessageDetail, 0, len(visibleMessages))
 		for _, meta := range visibleMessages {
 			full, err := rt.client.GetMessageFull(ctx, meta.Id)
 			if err != nil {
 				return mapGmailError(req.ID, err)
 			}
-			message, err := gmailapi.BuildMessageDetail(full, true, s.cfg.MaxBodyBytes)
+			message, err := gmailapi.BuildMessageDetail(full, params.IncludeBody, s.cfg.MaxBodyBytes)
 			if err != nil {
 				return rpc.NewError(req.ID, "internal_error", "failed to shape message response", false)
 			}
@@ -631,24 +633,35 @@ func (s *Server) handleGetAttachment(req rpc.Request) rpc.Response {
 	if !ok {
 		return rpc.NewError(req.ID, "not_found", "attachment was not found on visible message", false)
 	}
-	if s.cfg.MaxAttachmentBytes > 0 && attachment.Size > int64(s.cfg.MaxAttachmentBytes) {
+	maxAttachmentBytes := s.maxAttachmentBytes()
+	if maxAttachmentBytes > 0 && attachment.Meta.Size > int64(maxAttachmentBytes) {
 		return rpc.NewError(req.ID, "too_large", "attachment exceeds broker size limit", false)
 	}
 
-	data, err := rt.client.GetAttachmentData(ctx, params.MessageID, params.AttachmentID)
+	var data []byte
+	if attachment.IsInline() {
+		data, err = attachment.Data()
+		if err != nil {
+			return rpc.NewError(req.ID, "internal_error", "failed to decode attachment content", false)
+		}
+	} else {
+		data, err = rt.client.GetAttachmentData(ctx, params.MessageID, params.AttachmentID)
+		if err != nil {
+			return mapGmailError(req.ID, err)
+		}
+	}
+	if maxAttachmentBytes > 0 && len(data) > maxAttachmentBytes {
+		return rpc.NewError(req.ID, "too_large", "attachment exceeds broker size limit", false)
+	}
+
+	resp, err := buildAttachmentResponse(req.ID, attachment.Meta, data)
 	if err != nil {
-		return mapGmailError(req.ID, err)
+		if errors.Is(err, errAttachmentResponseTooLarge) {
+			return rpc.NewError(req.ID, "too_large", "attachment exceeds broker size limit", false)
+		}
+		return rpc.NewError(req.ID, "internal_error", "failed to encode attachment response", false)
 	}
-	if s.cfg.MaxAttachmentBytes > 0 && len(data) > s.cfg.MaxAttachmentBytes {
-		return rpc.NewError(req.ID, "too_large", "attachment exceeds broker size limit", false)
-	}
-
-	return rpc.NewSuccess(req.ID, rpc.GmailGetAttachmentResult{
-		Attachment: rpc.AttachmentContent{
-			AttachmentMeta: attachment,
-			ContentBase64:  base64.StdEncoding.EncodeToString(data),
-		},
-	})
+	return resp
 }
 
 func (s *Server) openGmailRuntime(ctx context.Context, id string) (*gmailRuntime, *rpc.Response) {
@@ -992,6 +1005,37 @@ func mapGmailError(id string, err error) rpc.Response {
 		return rpc.NewError(id, "gmail_api_error", "gmail api request timed out", true)
 	}
 	return rpc.NewError(id, "gmail_api_error", "gmail api request failed", false)
+}
+
+var errAttachmentResponseTooLarge = errors.New("attachment response exceeds client frame limit")
+
+func (s *Server) maxAttachmentBytes() int {
+	switch {
+	case s.cfg.MaxAttachmentBytes <= 0:
+		return transportSafeAttachmentBytes
+	case s.cfg.MaxAttachmentBytes > transportSafeAttachmentBytes:
+		return transportSafeAttachmentBytes
+	default:
+		return s.cfg.MaxAttachmentBytes
+	}
+}
+
+func buildAttachmentResponse(id string, meta rpc.AttachmentMeta, data []byte) (rpc.Response, error) {
+	resp := rpc.NewSuccess(id, rpc.GmailGetAttachmentResult{
+		Attachment: rpc.AttachmentContent{
+			AttachmentMeta: meta,
+			ContentBase64:  base64.StdEncoding.EncodeToString(data),
+		},
+	})
+
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return rpc.Response{}, err
+	}
+	if len(payload) > int(rpc.DefaultResponseMaxBytes()) {
+		return rpc.Response{}, errAttachmentResponseTooLarge
+	}
+	return resp, nil
 }
 
 func writeResponse(conn net.Conn, resp rpc.Response) error {

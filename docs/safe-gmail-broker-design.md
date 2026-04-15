@@ -475,7 +475,7 @@ Suggested top-level broker config:
     "include_body_default": false,
     "max_body_bytes": 65536,
     "max_search_results": 100,
-    "max_attachment_bytes": 26214400
+    "max_attachment_bytes": 24117248
   }
 }
 ```

@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultMaxBodyBytes       = 64 * 1024
-	defaultMaxAttachmentBytes = 25 * 1024 * 1024
+	defaultMaxAttachmentBytes = 23 * 1024 * 1024
 	defaultMaxSearchResults   = 100
 	defaultSocketMode         = "0660"
 	defaultAuthStoreBackend   = "system"

@@ -337,7 +337,7 @@ Success result:
   "instance": "work",
   "account_email": "you@example.com",
   "max_body_bytes": 65536,
-  "max_attachment_bytes": 26214400,
+  "max_attachment_bytes": 24117248,
   "max_search_results": 100,
   "search_query_syntax": "gmail",
   "label_query_mode": "name",
@@ -616,7 +616,8 @@ Request params:
   "query": "newer_than:7d",
   "limit": 20,
   "page_token": "",
-  "include_body": false
+  "include_body": false,
+  "include_attachments": false
 }
 ```
 
@@ -639,6 +640,11 @@ Fields:
   - optional
   - boolean
   - default: `false`
+- `include_attachments`
+  - optional
+  - boolean
+  - default: `false`
+  - includes `attachments` metadata on each returned message without downloading attachment bytes
 
 Success result:
 
@@ -664,8 +670,9 @@ Success result:
 
 Rules:
 
-- if `include_body` is `true`, returned items use `message_detail`
+- if `include_body` or `include_attachments` is `true`, returned items use `message_detail`
 - auth must happen before body retrieval
+- attachment metadata retrieval must happen only after auth
 - `body_text` may be truncated to `max_body_bytes`
 
 ### `gmail.get_message`

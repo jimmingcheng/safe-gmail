@@ -115,7 +115,7 @@ type MessageDetail struct {
 	MessageSummary
 	BodyText      string           `json:"body_text,omitempty"`
 	BodyTruncated *bool            `json:"body_truncated,omitempty"`
-	Attachments   []AttachmentMeta `json:"attachments,omitempty"`
+	Attachments   []AttachmentMeta `json:"attachments"`
 }
 
 // ThreadDetailSummary is the thread detail result without bodies.
@@ -132,10 +132,11 @@ type ThreadDetail struct {
 
 // GmailSearchMessagesParams is the request payload for gmail.search_messages.
 type GmailSearchMessagesParams struct {
-	Query       string `json:"query"`
-	Limit       int    `json:"limit,omitempty"`
-	PageToken   string `json:"page_token,omitempty"`
-	IncludeBody bool   `json:"include_body,omitempty"`
+	Query              string `json:"query"`
+	Limit              int    `json:"limit,omitempty"`
+	PageToken          string `json:"page_token,omitempty"`
+	IncludeBody        bool   `json:"include_body,omitempty"`
+	IncludeAttachments bool   `json:"include_attachments,omitempty"`
 }
 
 // GmailSearchThreadsParams is the request payload for gmail.search_threads.
@@ -172,7 +173,8 @@ type GmailSearchMessagesResultSummary struct {
 	NextPageToken string           `json:"next_page_token"`
 }
 
-// GmailSearchMessagesResultDetail is the result payload for gmail.search_messages with bodies.
+// GmailSearchMessagesResultDetail is the result payload for gmail.search_messages
+// when attachment metadata and/or bodies are requested.
 type GmailSearchMessagesResultDetail struct {
 	Messages      []MessageDetail `json:"messages"`
 	NextPageToken string          `json:"next_page_token"`

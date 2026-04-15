@@ -155,11 +155,16 @@ func runGet(socketPath string, jsonOut bool, args []string) int {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	includeBody := fs.Bool("body", false, "Include body text")
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail get [--body] <message-id>",
+			"Fetches one visible message. This always prints one line per attachment as attachment<TAB><attachment-id><TAB><filename><TAB><mime-type><TAB><size>. For a reliable attachment workflow: search for a message_id, run get <message-id> to collect attachment_id values, then run attachment get <message-id> <attachment-id>.",
+			fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		usage(os.Stderr)
+		fs.Usage()
 		return 2
 	}
 	if err := requireSocket(socketPath); err != nil {
@@ -232,12 +237,13 @@ func runGet(socketPath string, jsonOut bool, args []string) int {
 func runSearch(socketPath string, jsonOut bool, args []string) int {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	includeBody := fs.Bool("body", false, "Include message bodies")
+	includeAttachments := fs.Bool("attachments", false, "Include attachment metadata without downloading bytes")
 	limit := fs.Int("limit", 0, "Maximum number of results")
 	pageToken := fs.String("page-token", "", "Opaque page token")
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		printCommandUsage(os.Stderr, "safe-gmail search [--body] [--limit N] [--page-token TOKEN] <query>",
-			"<query> uses Gmail search syntax. If you omit an in: operator, the broker defaults to in:anywhere; for example: label:vip newer_than:7d or from:alice@example.com has:attachment.",
+		printCommandUsage(os.Stderr, "safe-gmail search [--body] [--attachments] [--limit N] [--page-token TOKEN] <query>",
+			"<query> uses Gmail search syntax. If you omit an in: operator, the broker defaults to in:anywhere; for example: label:vip newer_than:7d or from:alice@example.com has:attachment. Use --attachments to include attachment_id, filename, mime type, and size without downloading bytes. Without --body or --attachments, search returns message summaries only.",
 			fs)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -253,10 +259,11 @@ func runSearch(socketPath string, jsonOut bool, args []string) int {
 	}
 
 	params, err := json.Marshal(rpc.GmailSearchMessagesParams{
-		Query:       strings.Join(fs.Args(), " "),
-		Limit:       *limit,
-		PageToken:   *pageToken,
-		IncludeBody: *includeBody,
+		Query:              strings.Join(fs.Args(), " "),
+		Limit:              *limit,
+		PageToken:          *pageToken,
+		IncludeBody:        *includeBody,
+		IncludeAttachments: *includeAttachments,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -286,7 +293,7 @@ func runSearch(socketPath string, jsonOut bool, args []string) int {
 		return 1
 	}
 
-	if *includeBody {
+	if *includeBody || *includeAttachments {
 		var result rpc.GmailSearchMessagesResultDetail
 		if err := decodeResult(resp.Result, &result); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -471,11 +478,16 @@ func runThreadGet(socketPath string, jsonOut bool, args []string) int {
 	fs := flag.NewFlagSet("thread get", flag.ContinueOnError)
 	includeBodies := fs.Bool("bodies", false, "Include message bodies")
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail thread get [--bodies] <thread-id>",
+			"Fetches one visible thread. Without --bodies, output is message summaries only. With --bodies, each visible message includes attachment lines in the same format as get, so an agent can collect attachment_id values and then call attachment get.",
+			fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		usage(os.Stderr)
+		fs.Usage()
 		return 2
 	}
 	if err := requireSocket(socketPath); err != nil {
@@ -551,11 +563,16 @@ func runAttachment(socketPath string, jsonOut bool, args []string) int {
 	fs := flag.NewFlagSet("attachment get", flag.ContinueOnError)
 	outputPath := fs.String("output", "", "Write decoded bytes to a file path")
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail attachment get [--output PATH] <message-id> <attachment-id>",
+			"Downloads one attachment from one visible message. Obtain attachment_id from get <message-id> or thread get --bodies <thread-id>. If --output is omitted, raw attachment bytes are written to stdout; for agent workflows, prefer --output PATH or --json.",
+			fs)
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
 	if fs.NArg() != 2 {
-		usage(os.Stderr)
+		fs.Usage()
 		return 2
 	}
 	if err := requireSocket(socketPath); err != nil {
@@ -709,6 +726,8 @@ func printCommandUsage(w io.Writer, command, note string, fs *flag.FlagSet) {
 		fmt.Fprintln(w, note)
 	}
 	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Global flags apply before the command. Set --socket /path/to.sock or SAFE_GMAIL_SOCKET, and use --json for machine-readable output.")
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
 	fs.PrintDefaults()
 }
@@ -751,7 +770,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock system ping")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock system info")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock labels list")
-	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock search [--body] [--limit N] [--page-token TOKEN] <query>")
+	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock search [--body] [--attachments] [--limit N] [--page-token TOKEN] <query>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock get [--body] <message-id>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock thread search [--limit N] [--page-token TOKEN] <query>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock thread get [--bodies] <thread-id>")
@@ -762,4 +781,9 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  If you omit an in: operator, searches default to in:anywhere.")
 	fmt.Fprintln(w, "  Query labels by name, for example: label:vip or label:\"Kids/School\".")
 	fmt.Fprintln(w, "  labels list is mailbox-wide and is not filtered by the broker visibility policy.")
+	fmt.Fprintln(w, "  Bulk attachment workflow for agents: search --attachments -> attachment get <message-id> <attachment-id>.")
+	fmt.Fprintln(w, "  get always prints attachment lines with attachment_id values when attachments are visible.")
+	fmt.Fprintln(w, "  search without --body or --attachments does not include attachment_id values.")
+	fmt.Fprintln(w, "  attachment get writes raw bytes to stdout unless you pass --output PATH.")
+	fmt.Fprintln(w, "  Prefer --json for machine-readable automation.")
 }

@@ -217,6 +217,7 @@ Try a search:
 
 ```sh
 safe-gmail search "newer_than:7d"
+safe-gmail search --attachments "has:attachment newer_than:7d"
 safe-gmail thread search "from:alice@example.com"
 safe-gmail labels list
 ```
@@ -245,6 +246,7 @@ For machine-readable responses, use `--json`:
 safe-gmail --json system info
 safe-gmail --json labels list
 safe-gmail --json search "label:vip newer_than:7d"
+safe-gmail --json search --attachments "has:attachment newer_than:7d"
 safe-gmail --json get --body <message-id>
 safe-gmail --json thread get --bodies <thread-id>
 ```
@@ -255,6 +257,9 @@ Practical guidance for agents:
 - do not ask for raw Gmail OAuth tokens or browser cookies
 - prefer `--json` when another tool will parse the output
 - search queries use Gmail query syntax
+- to scan many visible messages for attachments without downloading bytes, use `safe-gmail --json search --attachments "<query>"`
+- in JSON mode, inspect `result.messages[].attachments[]` for `attachment_id`, filename, MIME type, and size
+- use `safe-gmail attachment get --output PATH <message-id> <attachment-id>` only for attachments you actually need
 - label listing is mailbox-wide and not filtered by the broker visibility policy
 - if you omit an `in:` operator, search and thread search default to `in:anywhere`, so archived mail is included by default
 - query labels by name, not by returned `label_ids`
@@ -323,6 +328,7 @@ The same security model applies on macOS, but use `launchd` instead of `systemd`
 
 ```sh
 mkdir -p ~/Library/LaunchAgents
+mkdir -p /var/tmp/safe-gmail/logs
 safe-gmaild service print-launchd \
   --config ~/.config/safe-gmail/default/broker.json \
   --binary /usr/local/bin/safe-gmaild \
@@ -330,5 +336,7 @@ safe-gmaild service print-launchd \
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.safe-gmail.default.plist
 launchctl enable gui/$(id -u)/com.safe-gmail.default
 ```
+
+If your `broker.json` sets `state_path`, create that sibling `logs/` directory instead of `/var/tmp/safe-gmail/logs`.
 
 If you care about the security boundary on macOS, the agent user should still be a separate non-admin user.

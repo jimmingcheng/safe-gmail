@@ -38,6 +38,9 @@ func TestLoadAppliesAuthStoreDefaults(t *testing.T) {
 	if cfg.SocketMode != "0660" {
 		t.Fatalf("SocketMode = %q, want 0660", cfg.SocketMode)
 	}
+	if cfg.MaxAttachmentBytes != defaultMaxAttachmentBytes {
+		t.Fatalf("MaxAttachmentBytes = %d, want %d", cfg.MaxAttachmentBytes, defaultMaxAttachmentBytes)
+	}
 }
 
 func TestAuthStoreFileDefaultsFromStatePath(t *testing.T) {

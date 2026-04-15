@@ -5,7 +5,7 @@
   "socket_path": "/tmp/safe-gmail.sock",
   "socket_mode": "0660",
   "max_body_bytes": 65536,
-  "max_attachment_bytes": 26214400,
+  "max_attachment_bytes": 24117248,
   "max_search_results": 100,
   "oauth_client_path": "/Users/you/.config/safe-gmail/work/oauth-client.json",
   "policy_path": "/Users/you/.config/safe-gmail/work/policy.json",

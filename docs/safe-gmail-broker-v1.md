@@ -207,7 +207,7 @@ Suggested `broker.json`:
   "socket_path": "/run/safe-gmail/work/broker.sock",
   "log_format": "json",
   "max_body_bytes": 65536,
-  "max_attachment_bytes": 26214400,
+  "max_attachment_bytes": 24117248,
   "max_search_results": 100,
   "oauth_client_path": "/etc/safe-gmail/work/oauth-client.json",
   "policy_path": "/etc/safe-gmail/work/policy.json",
@@ -442,7 +442,8 @@ Request:
   "query": "newer_than:7d",
   "limit": 20,
   "page_token": "",
-  "include_body": false
+  "include_body": false,
+  "include_attachments": false
 }
 ```
 
@@ -471,7 +472,9 @@ Response:
 Server rules:
 
 - auth must use fixed metadata fetches
+- if `include_body` or `include_attachments` is `true`, returned items use the detail message shape
 - body retrieval, if supported, happens only after auth
+- attachment metadata retrieval, if requested, happens only after auth
 - enforce body byte cap
 
 ### `gmail.get_message`
@@ -946,7 +949,7 @@ Do not log:
 Recommended v1 defaults:
 
 - max body bytes: `65536`
-- max attachment bytes: `26214400`
+- max attachment bytes: `24117248`
 - max search results per request: `100`
 - request size cap: `1 MiB`
 - response size cap: `32 MiB`

@@ -13,6 +13,12 @@ const (
 	defaultResponseMaxBytes = 32 << 20
 )
 
+// DefaultResponseMaxBytes returns the client's current maximum response frame
+// size so the broker can avoid sending oversized payloads.
+func DefaultResponseMaxBytes() uint32 {
+	return defaultResponseMaxBytes
+}
+
 // Call sends one request to a Unix socket and reads one response.
 func Call(ctx context.Context, socketPath string, req Request) (Response, error) {
 	dialer := net.Dialer{}

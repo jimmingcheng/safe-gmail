@@ -1,6 +1,9 @@
 package service
 
 import (
+	"encoding/xml"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -84,5 +87,15 @@ func TestLaunchdPlistRendersArgumentsAndLogs(t *testing.T) {
 	}
 	if !strings.Contains(plist, "<string>/Users/me/Library/Logs/safe-gmaild.stderr.log</string>") {
 		t.Fatalf("plist missing stderr log path:\n%s", plist)
+	}
+
+	decoder := xml.NewDecoder(strings.NewReader(plist))
+	for {
+		if _, err := decoder.Token(); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("plist is not valid XML: %v\n%s", err, plist)
+		}
 	}
 }

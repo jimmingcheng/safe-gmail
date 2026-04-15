@@ -2,7 +2,6 @@ package gmailapi
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -297,12 +296,9 @@ func (c *Client) GetAttachmentData(ctx context.Context, messageID, attachmentID 
 		return nil, fmt.Errorf("get gmail attachment: empty attachment data")
 	}
 
-	data, err := base64.RawURLEncoding.DecodeString(body.Data)
+	data, err := decodeBase64Data(body.Data)
 	if err != nil {
-		data, err = base64.URLEncoding.DecodeString(body.Data)
-		if err != nil {
-			return nil, fmt.Errorf("decode gmail attachment: %w", err)
-		}
+		return nil, fmt.Errorf("decode gmail attachment: %w", err)
 	}
 	return data, nil
 }
