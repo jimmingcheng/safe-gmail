@@ -14,8 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/api/gmail/v1"
-
 	"github.com/jimmingcheng/safe-gmail/internal/auth"
 	"github.com/jimmingcheng/safe-gmail/internal/broker"
 	"github.com/jimmingcheng/safe-gmail/internal/config"
@@ -156,7 +154,7 @@ func runAuth(args []string) int {
 		return 1
 	}
 
-	flow, err := auth.NewManualFlow(client, strings.TrimSpace(*redirectURI), []string{gmail.GmailReadonlyScope}, *forceConsent)
+	flow, err := auth.NewManualFlow(client, strings.TrimSpace(*redirectURI), gmailapi.OAuthScopes(), *forceConsent)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

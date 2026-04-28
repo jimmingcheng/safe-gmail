@@ -205,6 +205,7 @@ func (s *Server) dispatch(req rpc.Request) rpc.Response {
 				rpc.MethodGmailGetMessage,
 				rpc.MethodGmailGetThread,
 				rpc.MethodGmailGetAttachment,
+				rpc.MethodGmailCreateDraft,
 			},
 		})
 	case rpc.MethodGmailListLabels:
@@ -219,6 +220,8 @@ func (s *Server) dispatch(req rpc.Request) rpc.Response {
 		return s.handleGetThread(req)
 	case rpc.MethodGmailGetAttachment:
 		return s.handleGetAttachment(req)
+	case rpc.MethodGmailCreateDraft:
+		return s.handleCreateDraft(req)
 	default:
 		return rpc.NewError(req.ID, "method_not_allowed", "method is not exposed by this broker", false)
 	}
@@ -664,6 +667,46 @@ func (s *Server) handleGetAttachment(req rpc.Request) rpc.Response {
 	return resp
 }
 
+func (s *Server) handleCreateDraft(req rpc.Request) rpc.Response {
+	var params rpc.GmailCreateDraftParams
+	if err := rpc.DecodeParams(req.Params, &params); err != nil {
+		return rpc.NewError(req.ID, "invalid_params", fmt.Sprintf("invalid gmail.create_draft params: %v", err), false)
+	}
+	if err := params.Validate(); err != nil {
+		return rpc.NewError(req.ID, "invalid_params", err.Error(), false)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rt, errResp := s.openGmailRuntime(ctx, req.ID)
+	if errResp != nil {
+		return *errResp
+	}
+
+	input, inputErr := s.buildDraftCreateInput(ctx, rt, params, req.ID)
+	if inputErr != nil {
+		return *inputErr
+	}
+
+	result, err := rt.client.CreateDraft(ctx, *input)
+	if err != nil {
+		return mapGmailError(req.ID, err)
+	}
+
+	return rpc.NewSuccess(req.ID, rpc.GmailCreateDraftResult{
+		Draft: rpc.DraftSummary{
+			DraftID:   result.DraftID,
+			MessageID: result.MessageID,
+			ThreadID:  result.ThreadID,
+			To:        input.To,
+			Cc:        input.Cc,
+			Bcc:       input.Bcc,
+			Subject:   input.Subject,
+		},
+	})
+}
+
 func (s *Server) openGmailRuntime(ctx context.Context, id string) (*gmailRuntime, *rpc.Response) {
 	return s.openGmailRuntimeWithLabelResolution(ctx, id, true)
 }
@@ -724,6 +767,106 @@ func (r *gmailRuntime) visibleThreadMessages(thread *gmail.Thread) []*gmail.Mess
 		}
 	}
 	return visible
+}
+
+func (s *Server) buildDraftCreateInput(ctx context.Context, rt *gmailRuntime, params rpc.GmailCreateDraftParams, id string) (*gmailapi.DraftCreateInput, *rpc.Response) {
+	to, err := gmailapi.NormalizeAddressList(params.To)
+	if err != nil {
+		resp := rpc.NewError(id, "invalid_params", err.Error(), false)
+		return nil, &resp
+	}
+	cc, err := gmailapi.NormalizeAddressList(params.Cc)
+	if err != nil {
+		resp := rpc.NewError(id, "invalid_params", err.Error(), false)
+		return nil, &resp
+	}
+	bcc, err := gmailapi.NormalizeAddressList(params.Bcc)
+	if err != nil {
+		resp := rpc.NewError(id, "invalid_params", err.Error(), false)
+		return nil, &resp
+	}
+
+	input := &gmailapi.DraftCreateInput{
+		From:     s.cfg.AccountEmail,
+		To:       to,
+		Cc:       cc,
+		Bcc:      bcc,
+		Subject:  strings.TrimSpace(params.Subject),
+		BodyText: params.BodyText,
+	}
+
+	replyToMessage := gmailapi.NormalizeMessageID(params.ReplyToMessageID)
+	replyToThread := gmailapi.NormalizeThreadID(params.ReplyToThreadID)
+	if replyToMessage == "" && replyToThread == "" {
+		if len(input.To)+len(input.Cc)+len(input.Bcc) == 0 {
+			resp := rpc.NewError(id, "invalid_params", "new drafts require at least one recipient", false)
+			return nil, &resp
+		}
+		return input, nil
+	}
+
+	anchor, resp := s.authorizedDraftReplyAnchor(ctx, rt, replyToMessage, replyToThread, id)
+	if resp != nil {
+		return nil, resp
+	}
+
+	replyCtx := gmailapi.DraftReplyContextFromMessage(anchor)
+	input.ThreadID = replyCtx.ThreadID
+	if input.ThreadID == "" {
+		input.ThreadID = replyToThread
+	}
+	input.InReplyTo = replyCtx.InReplyTo
+	input.References = replyCtx.References
+	if strings.TrimSpace(input.Subject) == "" {
+		input.Subject = replyCtx.Subject
+	}
+
+	if len(input.To)+len(input.Cc)+len(input.Bcc) == 0 {
+		replyTo, replyCc, err := gmailapi.DraftReplyRecipients(anchor, s.cfg.AccountEmail, params.ReplyAll)
+		if err != nil {
+			resp := rpc.NewError(id, "invalid_params", err.Error(), false)
+			return nil, &resp
+		}
+		input.To = replyTo
+		input.Cc = replyCc
+	}
+	if len(input.To)+len(input.Cc)+len(input.Bcc) == 0 {
+		resp := rpc.NewError(id, "invalid_params", "reply draft produced no recipients", false)
+		return nil, &resp
+	}
+	return input, nil
+}
+
+func (s *Server) authorizedDraftReplyAnchor(ctx context.Context, rt *gmailRuntime, messageID, threadID, id string) (*gmail.Message, *rpc.Response) {
+	if messageID != "" {
+		meta, err := rt.client.GetMessageMetadata(ctx, messageID)
+		if err != nil {
+			resp := mapGmailError(id, err)
+			return nil, &resp
+		}
+		if !rt.allowsMessage(meta) {
+			resp := rpc.NewError(id, "policy_denied", "reply target message is not visible under broker policy", false)
+			return nil, &resp
+		}
+		return meta, nil
+	}
+
+	thread, err := rt.client.GetThreadMetadata(ctx, threadID)
+	if err != nil {
+		resp := mapGmailError(id, err)
+		return nil, &resp
+	}
+	visible := rt.visibleThreadMessages(thread)
+	if len(visible) == 0 {
+		resp := rpc.NewError(id, "policy_denied", "reply target thread is not visible under broker policy", false)
+		return nil, &resp
+	}
+	anchor := gmailapi.NewestMessage(visible)
+	if anchor == nil {
+		resp := rpc.NewError(id, "policy_denied", "reply target thread is not visible under broker policy", false)
+		return nil, &resp
+	}
+	return anchor, nil
 }
 
 func (r *gmailRuntime) hasVisibleSearchScope() bool {

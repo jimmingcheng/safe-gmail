@@ -26,8 +26,9 @@ V1 covers:
 - `gmail.get_message`
 - `gmail.get_thread`
 - `gmail.get_attachment`
+- `gmail.create_draft`
 
-All other methods must return `method_not_allowed`.
+All other methods, including Gmail send methods, must return `method_not_allowed`.
 
 ## Transport
 
@@ -351,7 +352,8 @@ Success result:
     "gmail.search_messages",
     "gmail.get_message",
     "gmail.get_thread",
-    "gmail.get_attachment"
+    "gmail.get_attachment",
+    "gmail.create_draft"
   ]
 }
 ```
@@ -787,101 +789,6 @@ Rules:
 - if no visible messages remain, return `policy_denied`
 - if `include_bodies=true`, fetch full message content only after visibility is established
 
-### `gmail.list_drafts`
-
-Request params:
-
-```json
-{
-  "limit": 20,
-  "page_token": ""
-}
-```
-
-Fields:
-
-- `limit`
-  - optional
-  - integer
-  - default: `20`
-- `page_token`
-  - optional
-  - string
-
-Success result:
-
-```json
-{
-  "drafts": [
-    {
-      "draft_id": "draft-1",
-      "message_id": "msg-1",
-      "thread_id": "thread-1",
-      "to": ["alice@example.com"],
-      "cc": [],
-      "bcc": [],
-      "subject": "Draft"
-    }
-  ],
-  "next_page_token": ""
-}
-```
-
-Rules:
-
-- broker must revalidate stored recipients before returning each draft
-- restricted drafts must be omitted
-
-### `gmail.get_draft`
-
-Request params:
-
-```json
-{
-  "draft_id": "draft-1",
-  "include_body": true
-}
-```
-
-Fields:
-
-- `draft_id`
-  - required
-  - string
-- `include_body`
-  - optional
-  - boolean
-  - default: `false`
-
-Success result:
-
-```json
-{
-  "draft": {
-    "draft_id": "draft-1",
-    "message": {
-      "message_id": "msg-1",
-      "thread_id": "thread-1",
-      "from": "you@example.com",
-      "to": ["alice@example.com"],
-      "cc": [],
-      "bcc": [],
-      "subject": "Draft",
-      "snippet": "",
-      "received_at": "2026-03-12T18:20:00Z",
-      "label_ids": [],
-      "body_text": "hello",
-      "body_truncated": false,
-      "attachments": []
-    }
-  }
-}
-```
-
-Rules:
-
-- broker must validate recipients before returning the draft
-
 ### `gmail.create_draft`
 
 Request params:
@@ -893,17 +800,17 @@ Request params:
   "bcc": [],
   "subject": "Hello",
   "body_text": "hello",
-  "body_html": "<p>hello</p>",
   "reply_to_message_id": "",
-  "reply_strategy": "manual",
-  "attachments": []
+  "reply_to_thread_id": "",
+  "reply_all": false
 }
 ```
 
 Fields:
 
 - `to`
-  - required
+  - required for new drafts
+  - optional for reply drafts
   - array of `email_address`
 - `cc`
   - optional
@@ -914,48 +821,32 @@ Fields:
   - array of `email_address`
   - default: `[]`
 - `subject`
-  - required
-  - string
-- `body_text`
   - optional
   - string
-- `body_html`
+- `body_text`
   - optional
   - string
 - `reply_to_message_id`
   - optional
   - string
   - default: `""`
-- `reply_strategy`
+- `reply_to_thread_id`
   - optional
-  - string enum:
-    - `none`
-    - `manual`
-    - `reply_all`
-  - default: `none`
-- `attachments`
+  - string
+  - default: `""`
+- `reply_all`
   - optional
-  - array of `send_attachment`
-  - default: `[]`
-
-`send_attachment` shape:
-
-```json
-{
-  "filename": "note.txt",
-  "mime_type": "text/plain",
-  "content_base64": "aGVsbG8="
-}
-```
+  - boolean
+  - default: `false`
 
 Rules:
 
-- at least one of `body_text` or `body_html` must be present
-- `reply_strategy = reply_all` requires `reply_to_message_id`
-- when `reply_strategy = reply_all`, client-supplied `to` and `cc` must be empty
-- broker derives final reply-all recipients server-side
-- all final recipients including derived `Bcc`-relevant auth context must be validated before creating the draft
-- each attachment payload must fit within request size limits
+- new drafts require at least one final recipient in `to`, `cc`, or `bcc`
+- set at most one of `reply_to_message_id` or `reply_to_thread_id`
+- reply drafts require the referenced message or thread to be visible under broker policy
+- `reply_to_thread_id` uses the newest visible message in that thread as the reply anchor
+- when reply recipients are omitted, the broker derives reply or reply-all recipients server-side
+- this method creates drafts only; no send method is exposed
 
 Success result:
 
@@ -964,144 +855,11 @@ Success result:
   "draft": {
     "draft_id": "draft-1",
     "message_id": "msg-1",
-    "thread_id": "thread-1"
-  }
-}
-```
-
-### `gmail.update_draft`
-
-V1 update semantics are full replacement of mutable content.
-
-The client must send the full intended draft content.
-
-Request params:
-
-```json
-{
-  "draft_id": "draft-1",
-  "to": ["alice@example.com"],
-  "cc": [],
-  "bcc": [],
-  "subject": "Updated",
-  "body_text": "updated body",
-  "body_html": "",
-  "reply_to_message_id": "",
-  "reply_strategy": "manual",
-  "attachments": []
-}
-```
-
-Fields:
-
-- same as `gmail.create_draft`
-- plus `draft_id` required
-
-Rules:
-
-- server may fetch existing draft for thread context
-- recipient validation happens against the full replacement content
-- omitted arrays default to empty
-- omitted body fields are treated as empty
-- at least one of `body_text` or `body_html` must remain present after validation
-
-Success result:
-
-```json
-{
-  "draft": {
-    "draft_id": "draft-1",
-    "message_id": "msg-1",
-    "thread_id": "thread-1"
-  }
-}
-```
-
-### `gmail.send_draft`
-
-Request params:
-
-```json
-{
-  "draft_id": "draft-1"
-}
-```
-
-Success result:
-
-```json
-{
-  "sent": {
-    "message_id": "msg-1",
-    "thread_id": "thread-1"
-  }
-}
-```
-
-Rules:
-
-- broker must reload the stored draft from Gmail
-- recipients must be revalidated immediately before send
-
-### `gmail.delete_draft`
-
-Request params:
-
-```json
-{
-  "draft_id": "draft-1"
-}
-```
-
-Success result:
-
-```json
-{
-  "deleted": true
-}
-```
-
-Rules:
-
-- broker must authorize draft access before delete
-
-### `gmail.send_message`
-
-Request params:
-
-```json
-{
-  "to": ["alice@example.com"],
-  "cc": [],
-  "bcc": [],
-  "subject": "Hello",
-  "body_text": "hello",
-  "body_html": "<p>hello</p>",
-  "reply_to_message_id": "",
-  "reply_strategy": "none",
-  "attachments": []
-}
-```
-
-Fields:
-
-- same shape as `gmail.create_draft`, except no `draft_id`
-
-Rules:
-
-- at least one final recipient must exist after server-side reply expansion
-- `reply_strategy = reply_all` requires `reply_to_message_id`
-- broker derives reply-all recipients on the server
-- broker validates final `To`, `Cc`, and `Bcc`
-- auth for the replied-to message must use fixed metadata including `Bcc`
-
-Success result:
-
-```json
-{
-  "sent": {
-    "message_id": "msg-1",
-    "thread_id": "thread-1"
+    "thread_id": "thread-1",
+    "to": ["alice@example.com"],
+    "cc": [],
+    "bcc": [],
+    "subject": "Hello"
   }
 }
 ```

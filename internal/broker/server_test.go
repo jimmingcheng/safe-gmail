@@ -713,6 +713,12 @@ func TestDispatchSystemInfoIncludesQueryAndLabelDiscoveryHints(t *testing.T) {
 	if !containsString(info.Methods, rpc.MethodGmailListLabels) {
 		t.Fatalf("info.Methods = %#v, want gmail.list_labels", info.Methods)
 	}
+	if !containsString(info.Methods, rpc.MethodGmailCreateDraft) {
+		t.Fatalf("info.Methods = %#v, want gmail.create_draft", info.Methods)
+	}
+	if containsString(info.Methods, "gmail.send_draft") || containsString(info.Methods, "gmail.send_message") {
+		t.Fatalf("info.Methods = %#v, want no send methods", info.Methods)
+	}
 }
 
 func TestGmailRuntimeSearchQueryDefaultsToAnywhere(t *testing.T) {
@@ -1406,6 +1412,162 @@ func TestHandleGetAttachmentRejectsAttachmentsAboveTransportCap(t *testing.T) {
 	}
 }
 
+func TestHandleCreateDraftCreatesNewDraftWithoutSend(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeGmailService{
+		createDraftResult: gmailapi.DraftCreateResult{
+			DraftID:   "draft-1",
+			MessageID: "draft-msg-1",
+			ThreadID:  "draft-thread-1",
+		},
+	}
+
+	srv, err := NewWithDeps(testConfig(), Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return testResolvedVisibilityPolicy(), nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithDeps() error = %v", err)
+	}
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-draft",
+		Method: rpc.MethodGmailCreateDraft,
+		Params: []byte(`{"to":["Alice <Alice@Example.com>"],"cc":["bob@example.com, carol@example.com"],"subject":"Hello","body_text":"draft body"}`),
+	})
+	if !resp.OK {
+		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
+	}
+	if len(service.createdDrafts) != 1 {
+		t.Fatalf("createdDrafts = %#v, want one draft", service.createdDrafts)
+	}
+	input := service.createdDrafts[0]
+	if input.From != "owner@example.com" {
+		t.Fatalf("input.From = %q, want owner@example.com", input.From)
+	}
+	if got, want := input.To, []string{"alice@example.com"}; fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", want) {
+		t.Fatalf("input.To = %#v, want %#v", got, want)
+	}
+	if got, want := input.Cc, []string{"bob@example.com", "carol@example.com"}; fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", want) {
+		t.Fatalf("input.Cc = %#v, want %#v", got, want)
+	}
+
+	var result rpc.GmailCreateDraftResult
+	if err := decodeResult(resp.Result, &result); err != nil {
+		t.Fatalf("decodeResult() error = %v", err)
+	}
+	if result.Draft.DraftID != "draft-1" || result.Draft.MessageID != "draft-msg-1" {
+		t.Fatalf("result.Draft = %#v, want returned ids", result.Draft)
+	}
+}
+
+func TestHandleCreateDraftReplyToThreadAuthorizesAndDerivesThreading(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeGmailService{
+		threads: map[string]*gmail.Thread{
+			"thread-1": {
+				Id: "thread-1",
+				Messages: []*gmail.Message{
+					testMessageWithMessageID("msg-1", "thread-1", "alice@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "older", 1710267600000, "Status", "<msg-1@example.com>", ""),
+					testMessageWithMessageID("msg-2", "thread-1", "bob@example.com", []string{"owner@example.com"}, []string{"Label_1"}, "newer", 1710354000000, "Status", "<msg-2@example.com>", "<msg-1@example.com>"),
+				},
+			},
+		},
+		threadErr: map[string]error{},
+	}
+
+	srv, err := NewWithDeps(testConfig(), Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return testResolvedVisibilityPolicy(), nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithDeps() error = %v", err)
+	}
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-draft-reply",
+		Method: rpc.MethodGmailCreateDraft,
+		Params: []byte(`{"reply_to_thread_id":"thread-1","reply_all":true,"body_text":"reply body"}`),
+	})
+	if !resp.OK {
+		t.Fatalf("dispatch() ok = false, want true: %#v", resp.Error)
+	}
+	if len(service.threadCalls) != 1 || service.threadCalls[0] != "thread-1" {
+		t.Fatalf("threadCalls = %#v, want [thread-1]", service.threadCalls)
+	}
+	if len(service.createdDrafts) != 1 {
+		t.Fatalf("createdDrafts = %#v, want one draft", service.createdDrafts)
+	}
+
+	input := service.createdDrafts[0]
+	if input.ThreadID != "thread-1" {
+		t.Fatalf("input.ThreadID = %q, want thread-1", input.ThreadID)
+	}
+	if input.Subject != "Re: Status" {
+		t.Fatalf("input.Subject = %q, want Re: Status", input.Subject)
+	}
+	if input.InReplyTo != "<msg-2@example.com>" {
+		t.Fatalf("input.InReplyTo = %q, want newest message id", input.InReplyTo)
+	}
+	if got, want := input.References, []string{"<msg-1@example.com>", "<msg-2@example.com>"}; fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", want) {
+		t.Fatalf("input.References = %#v, want %#v", got, want)
+	}
+	if got, want := input.To, []string{"bob@example.com"}; fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", want) {
+		t.Fatalf("input.To = %#v, want %#v", got, want)
+	}
+}
+
+func TestHandleCreateDraftReplyRejectsHiddenMessage(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeGmailService{
+		metadata: map[string]*gmail.Message{
+			"msg-hidden": testMessageWithMessageID("msg-hidden", "thread-1", "mallory@example.net", []string{"owner@example.com"}, []string{"INBOX"}, "hidden", 1710267600000, "Hidden", "<hidden@example.net>", ""),
+		},
+		metadataErr: map[string]error{},
+	}
+
+	srv, err := NewWithDeps(testConfig(), Dependencies{
+		LoadPolicy: func(string, string) (*policy.Policy, error) {
+			return testResolvedVisibilityPolicy(), nil
+		},
+		NewGmailService: func(context.Context, config.Config) (gmailapi.Service, error) {
+			return service, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithDeps() error = %v", err)
+	}
+
+	resp := srv.dispatch(rpc.Request{
+		V:      rpc.Version1,
+		ID:     "req-draft-hidden",
+		Method: rpc.MethodGmailCreateDraft,
+		Params: []byte(`{"reply_to_message_id":"msg-hidden","body_text":"reply body"}`),
+	})
+	if resp.OK {
+		t.Fatalf("dispatch() ok = true, want false")
+	}
+	if resp.Error == nil || resp.Error.Code != "policy_denied" {
+		t.Fatalf("resp.Error = %#v, want policy_denied", resp.Error)
+	}
+	if len(service.createdDrafts) != 0 {
+		t.Fatalf("createdDrafts = %#v, want none", service.createdDrafts)
+	}
+}
+
 type fakeGmailService struct {
 	labels                 map[string]string
 	labelList              []gmailapi.Label
@@ -1424,6 +1586,9 @@ type fakeGmailService struct {
 	fullErr                map[string]error
 	attachmentData         map[string][]byte
 	attachmentErr          map[string]error
+	createdDrafts          []gmailapi.DraftCreateInput
+	createDraftResult      gmailapi.DraftCreateResult
+	createDraftErr         error
 	metadataCalls          []string
 	fullCalls              []string
 	threadCalls            []string
@@ -1552,6 +1717,21 @@ func (f *fakeGmailService) GetAttachmentData(_ context.Context, messageID, attac
 	return f.attachmentData[key], nil
 }
 
+func (f *fakeGmailService) CreateDraft(_ context.Context, input gmailapi.DraftCreateInput) (gmailapi.DraftCreateResult, error) {
+	f.createdDrafts = append(f.createdDrafts, input)
+	if f.createDraftErr != nil {
+		return gmailapi.DraftCreateResult{}, f.createDraftErr
+	}
+	if f.createDraftResult.DraftID != "" {
+		return f.createDraftResult, nil
+	}
+	return gmailapi.DraftCreateResult{
+		DraftID:   "draft-1",
+		MessageID: "draft-msg-1",
+		ThreadID:  input.ThreadID,
+	}, nil
+}
+
 func testConfig() config.Config {
 	return config.Config{
 		Instance:           "work",
@@ -1607,6 +1787,17 @@ func testMessageAt(id, threadID, from string, to []string, labels []string, body
 			},
 		},
 	}
+}
+
+func testMessageWithMessageID(id, threadID, from string, to []string, labels []string, body string, internalDate int64, subject, messageID, references string) *gmail.Message {
+	msg := testMessageAt(id, threadID, from, to, labels, body, internalDate, subject)
+	if strings.TrimSpace(messageID) != "" {
+		msg.Payload.Headers = append(msg.Payload.Headers, &gmail.MessagePartHeader{Name: "Message-ID", Value: messageID})
+	}
+	if strings.TrimSpace(references) != "" {
+		msg.Payload.Headers = append(msg.Payload.Headers, &gmail.MessagePartHeader{Name: "References", Value: references})
+	}
+	return msg
 }
 
 func testMessageWithAttachment(id, threadID, from string, to []string, labels []string, body, filename, mimeType, attachmentID string, attachmentSize int64) *gmail.Message {

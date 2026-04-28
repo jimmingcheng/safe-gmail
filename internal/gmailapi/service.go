@@ -30,6 +30,7 @@ type Service interface {
 	GetMessageFull(ctx context.Context, messageID string) (*gmail.Message, error)
 	GetThreadMetadata(ctx context.Context, threadID string) (*gmail.Thread, error)
 	GetAttachmentData(ctx context.Context, messageID, attachmentID string) ([]byte, error)
+	CreateDraft(ctx context.Context, input DraftCreateInput) (DraftCreateResult, error)
 }
 
 // Label is the normalized Gmail label metadata the broker uses for policy and discovery.
@@ -74,7 +75,7 @@ func New(ctx context.Context, cfg config.Config) (Service, error) {
 		return nil, err
 	}
 
-	tokenSource, err := auth.TokenSource(ctx, oauthClient, store, cfg.Instance, cfg.AccountEmail, []string{gmail.GmailReadonlyScope})
+	tokenSource, err := auth.TokenSource(ctx, oauthClient, store, cfg.Instance, cfg.AccountEmail, OAuthScopes())
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +252,7 @@ func (c *Client) GetMessageMetadata(ctx context.Context, messageID string) (*gma
 
 	return c.svc.Users.Messages.Get("me", NormalizeMessageID(messageID)).
 		Format("metadata").
-		MetadataHeaders("From", "To", "Cc", "Bcc", "Subject", "Date").
+		MetadataHeaders("From", "Reply-To", "To", "Cc", "Bcc", "Subject", "Date", "Message-ID", "In-Reply-To", "References").
 		Fields("id,threadId,labelIds,snippet,internalDate,payload(headers)").
 		Context(ctx).
 		Do()
@@ -275,7 +276,7 @@ func (c *Client) GetThreadMetadata(ctx context.Context, threadID string) (*gmail
 
 	return c.svc.Users.Threads.Get("me", NormalizeThreadID(threadID)).
 		Format("metadata").
-		MetadataHeaders("From", "To", "Cc", "Bcc", "Subject", "Date").
+		MetadataHeaders("From", "Reply-To", "To", "Cc", "Bcc", "Subject", "Date", "Message-ID", "In-Reply-To", "References").
 		Fields("id,messages(id,threadId,labelIds,snippet,internalDate,payload(headers))").
 		Context(ctx).
 		Do()

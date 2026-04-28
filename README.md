@@ -1,10 +1,10 @@
 # safe-gmail
 
-`safe-gmail` lets you give an untrusted local user or AI agent read-only access to a restricted slice of one Gmail account.
+`safe-gmail` lets you give an untrusted local user or AI agent access to a restricted slice of one Gmail account, plus the ability to create Gmail drafts for human review.
 
 The trusted user runs `safe-gmaild`, owns the Gmail OAuth token, and defines the mail policy. The untrusted user runs `safe-gmail` and can only use the broker's filtered Gmail API over a local Unix socket.
 
-The broker gives the untrusted side a small read-only Gmail surface:
+The broker gives the untrusted side a small filtered Gmail surface:
 
 - `system ping`
 - `system info`
@@ -14,6 +14,8 @@ The broker gives the untrusted side a small read-only Gmail surface:
 - message get
 - thread get
 - attachment get
+- draft create
+- draft reply
 
 Filtering is server-side and based on fixed message metadata. You can expose mail by:
 
@@ -24,7 +26,9 @@ A message is visible if it has the configured visibility label, or if it is owne
 
 Label listing is intentionally different: `labels list` returns the mailbox's full Gmail label inventory and is not filtered by the broker visibility policy.
 
-It does not expose Gmail settings, unrestricted Gmail API access, or direct OAuth credentials.
+Draft creation is intentionally not sending: `safe-gmail` can create new drafts and reply drafts in visible threads, but it does not expose a send command or RPC method. Gmail's compose OAuth scope is required to create drafts and also permits sending at the Google API level, so the owner-side daemon and token still need to be treated as trusted.
+
+It does not expose Gmail settings, unrestricted Gmail API access, send methods, or direct OAuth credentials.
 
 ## Security Model
 
@@ -180,6 +184,12 @@ The command prints a Google auth URL. Open it in a browser, log into the same Gm
 
 If you authorize the wrong Gmail account, the login fails instead of silently storing the wrong token.
 
+If you are upgrading from a read-only install and want draft creation, re-run login with `--force-consent` so Google grants the added Gmail compose scope:
+
+```sh
+safe-gmaild auth login --force-consent --config ~/.config/safe-gmail/default/broker.json
+```
+
 ### 6. Install the user service
 
 ```sh
@@ -232,6 +242,14 @@ safe-gmail thread get --bodies <thread-id>
 safe-gmail attachment get --output ./file.bin <message-id> <attachment-id>
 ```
 
+Create drafts for human review:
+
+```sh
+safe-gmail drafts create --to alice@example.com --subject "Hello" --body-file ./draft.txt
+safe-gmail drafts reply --thread-id <thread-id> --body-file ./reply.txt
+safe-gmail drafts reply --message-id <message-id> --all --body "Thanks, I'll take a look."
+```
+
 ## For AI Agents
 
 The cleanest setup is to give the agent user this environment variable:
@@ -249,6 +267,8 @@ safe-gmail --json search "label:vip newer_than:7d"
 safe-gmail --json search --attachments "has:attachment newer_than:7d"
 safe-gmail --json get --body <message-id>
 safe-gmail --json thread get --bodies <thread-id>
+safe-gmail --json drafts create --to alice@example.com --subject "Hello" --body-file ./draft.txt
+safe-gmail --json drafts reply --thread-id <thread-id> --body-file ./reply.txt
 ```
 
 Practical guidance for agents:
@@ -261,6 +281,8 @@ Practical guidance for agents:
 - in JSON mode, inspect `result.messages[].attachments[]` for `attachment_id`, filename, MIME type, and size
 - `attachment_id` is a broker-owned stable ID that can be passed back to `attachment get`; it is not the raw Gmail attachment token
 - use `safe-gmail attachment get --output PATH <message-id> <attachment-id>` only for attachments you actually need
+- use `safe-gmail drafts create` for new draft messages and `safe-gmail drafts reply` for replies to visible messages or threads
+- drafts are saved for the human Gmail owner to review and send manually; `safe-gmail` intentionally has no send command
 - label listing is mailbox-wide and not filtered by the broker visibility policy
 - if you omit an `in:` operator, search and thread search default to `in:anywhere`, so archived mail is included by default
 - query labels by name, not by returned `label_ids`
@@ -284,6 +306,12 @@ If you are upgrading specifically for owner-sent visibility:
 - replace legacy `addresses`, `domains`, and `labels` policy entries with `"visibility_label": "safe-gmail-visible"` or another Gmail label name you control
 - add `"allow_owner_sent": true` to `policy.json` if you want sent mail visible without the visibility label
 - create or update Gmail filters so the visibility label is applied to all mail you want exposed
+
+If you are upgrading specifically for draft creation:
+
+- rebuild and reinstall both binaries
+- re-run `safe-gmaild auth login --force-consent --config <broker.json>` to grant the Gmail compose scope
+- restart `safe-gmaild`
 
 Then restart the service:
 

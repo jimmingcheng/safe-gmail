@@ -17,6 +17,7 @@ const (
 	MethodGmailGetMessage     = "gmail.get_message"
 	MethodGmailGetThread      = "gmail.get_thread"
 	MethodGmailGetAttachment  = "gmail.get_attachment"
+	MethodGmailCreateDraft    = "gmail.create_draft"
 )
 
 // Request is a single RPC request envelope.
@@ -118,6 +119,17 @@ type MessageDetail struct {
 	Attachments   []AttachmentMeta `json:"attachments"`
 }
 
+// DraftSummary is the broker-owned draft shape returned after draft creation.
+type DraftSummary struct {
+	DraftID   string   `json:"draft_id"`
+	MessageID string   `json:"message_id"`
+	ThreadID  string   `json:"thread_id"`
+	To        []string `json:"to"`
+	Cc        []string `json:"cc"`
+	Bcc       []string `json:"bcc"`
+	Subject   string   `json:"subject"`
+}
+
 // ThreadDetailSummary is the thread detail result without bodies.
 type ThreadDetailSummary struct {
 	ThreadID string           `json:"thread_id"`
@@ -167,6 +179,18 @@ type GmailGetAttachmentParams struct {
 	AttachmentID string `json:"attachment_id"`
 }
 
+// GmailCreateDraftParams is the request payload for gmail.create_draft.
+type GmailCreateDraftParams struct {
+	To               []string `json:"to,omitempty"`
+	Cc               []string `json:"cc,omitempty"`
+	Bcc              []string `json:"bcc,omitempty"`
+	Subject          string   `json:"subject,omitempty"`
+	BodyText         string   `json:"body_text,omitempty"`
+	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
+	ReplyToThreadID  string   `json:"reply_to_thread_id,omitempty"`
+	ReplyAll         bool     `json:"reply_all,omitempty"`
+}
+
 // GmailSearchMessagesResultSummary is the result payload for gmail.search_messages without bodies.
 type GmailSearchMessagesResultSummary struct {
 	Messages      []MessageSummary `json:"messages"`
@@ -209,6 +233,11 @@ type GmailGetThreadResultDetail struct {
 // GmailGetAttachmentResult is the result payload for gmail.get_attachment.
 type GmailGetAttachmentResult struct {
 	Attachment AttachmentContent `json:"attachment"`
+}
+
+// GmailCreateDraftResult is the result payload for gmail.create_draft.
+type GmailCreateDraftResult struct {
+	Draft DraftSummary `json:"draft"`
 }
 
 // Validate enforces method-specific invariants.
@@ -255,6 +284,22 @@ func (p GmailGetAttachmentParams) Validate() error {
 	}
 	if strings.TrimSpace(p.AttachmentID) == "" {
 		return fmt.Errorf("missing attachment_id")
+	}
+	return nil
+}
+
+// Validate enforces method-specific invariants.
+func (p GmailCreateDraftParams) Validate() error {
+	replyToMessage := strings.TrimSpace(p.ReplyToMessageID)
+	replyToThread := strings.TrimSpace(p.ReplyToThreadID)
+	if replyToMessage != "" && replyToThread != "" {
+		return fmt.Errorf("set only one of reply_to_message_id or reply_to_thread_id")
+	}
+	if p.ReplyAll && replyToMessage == "" && replyToThread == "" {
+		return fmt.Errorf("reply_all requires reply_to_message_id or reply_to_thread_id")
+	}
+	if strings.TrimSpace(p.Subject) == "" && strings.TrimSpace(p.BodyText) == "" && len(p.To) == 0 && len(p.Cc) == 0 && len(p.Bcc) == 0 {
+		return fmt.Errorf("draft must include a recipient, subject, or body_text")
 	}
 	return nil
 }

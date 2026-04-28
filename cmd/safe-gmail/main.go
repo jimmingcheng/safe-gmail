@@ -52,10 +52,120 @@ func run(args []string) int {
 		return runThread(*socketPath, *jsonOut, rest[1:])
 	case len(rest) >= 1 && rest[0] == "attachment":
 		return runAttachment(*socketPath, *jsonOut, rest[1:])
+	case len(rest) >= 1 && rest[0] == "drafts":
+		return runDrafts(*socketPath, *jsonOut, rest[1:])
 	default:
 		usage(os.Stderr)
 		return 2
 	}
+}
+
+func runDrafts(socketPath string, jsonOut bool, args []string) int {
+	if len(args) == 0 {
+		usage(os.Stderr)
+		return 2
+	}
+
+	switch args[0] {
+	case "create":
+		return runDraftsCreate(socketPath, jsonOut, args[1:])
+	case "reply":
+		return runDraftsReply(socketPath, jsonOut, args[1:])
+	default:
+		usage(os.Stderr)
+		return 2
+	}
+}
+
+func runDraftsCreate(socketPath string, jsonOut bool, args []string) int {
+	fs := flag.NewFlagSet("drafts create", flag.ContinueOnError)
+	var to, cc, bcc stringListFlag
+	fs.Var(&to, "to", "Recipient email address; repeat or comma-separate")
+	fs.Var(&cc, "cc", "Cc email address; repeat or comma-separate")
+	fs.Var(&bcc, "bcc", "Bcc email address; repeat or comma-separate")
+	subject := fs.String("subject", "", "Draft subject")
+	body := fs.String("body", "", "Plain-text draft body")
+	bodyFile := fs.String("body-file", "", "Read plain-text draft body from path, or - for stdin")
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail drafts create --to EMAIL [--cc EMAIL] [--bcc EMAIL] [--subject SUBJECT] [--body TEXT | --body-file PATH]",
+			"Creates a Gmail draft only. It does not send mail and there is no safe-gmail send command.",
+			fs)
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+	bodyText, ok := readBodyFlag(*body, *bodyFile)
+	if !ok {
+		return 2
+	}
+	if len(to)+len(cc)+len(bcc) == 0 {
+		fmt.Fprintln(os.Stderr, "missing recipient: pass at least one --to, --cc, or --bcc")
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	return callCreateDraft(socketPath, jsonOut, rpc.GmailCreateDraftParams{
+		To:       []string(to),
+		Cc:       []string(cc),
+		Bcc:      []string(bcc),
+		Subject:  *subject,
+		BodyText: bodyText,
+	})
+}
+
+func runDraftsReply(socketPath string, jsonOut bool, args []string) int {
+	fs := flag.NewFlagSet("drafts reply", flag.ContinueOnError)
+	messageID := fs.String("message-id", "", "Visible message ID to reply to")
+	threadID := fs.String("thread-id", "", "Visible thread ID to reply to; newest visible message is used")
+	replyAll := fs.Bool("all", false, "Reply all")
+	subject := fs.String("subject", "", "Override draft subject")
+	body := fs.String("body", "", "Plain-text draft body")
+	bodyFile := fs.String("body-file", "", "Read plain-text draft body from path, or - for stdin")
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		printCommandUsage(os.Stderr, "safe-gmail drafts reply (--message-id ID | --thread-id ID) [--all] [--subject SUBJECT] [--body TEXT | --body-file PATH]",
+			"Creates a draft reply in a visible Gmail thread. Recipients are derived by the broker unless you later edit the draft in Gmail.",
+			fs)
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+	if strings.TrimSpace(*messageID) == "" && strings.TrimSpace(*threadID) == "" {
+		fmt.Fprintln(os.Stderr, "missing --message-id or --thread-id")
+		return 2
+	}
+	if strings.TrimSpace(*messageID) != "" && strings.TrimSpace(*threadID) != "" {
+		fmt.Fprintln(os.Stderr, "set only one of --message-id or --thread-id")
+		return 2
+	}
+	bodyText, ok := readBodyFlag(*body, *bodyFile)
+	if !ok {
+		return 2
+	}
+	if err := requireSocket(socketPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	return callCreateDraft(socketPath, jsonOut, rpc.GmailCreateDraftParams{
+		Subject:          *subject,
+		BodyText:         bodyText,
+		ReplyToMessageID: gmailapi.NormalizeMessageID(*messageID),
+		ReplyToThreadID:  gmailapi.NormalizeThreadID(*threadID),
+		ReplyAll:         *replyAll,
+	})
 }
 
 func runSystem(socketPath string, jsonOut bool, args []string) int {
@@ -654,6 +764,84 @@ func runAttachment(socketPath string, jsonOut bool, args []string) int {
 	return 0
 }
 
+func callCreateDraft(socketPath string, jsonOut bool, draftParams rpc.GmailCreateDraftParams) int {
+	params, err := json.Marshal(draftParams)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	req := rpc.Request{
+		V:      rpc.Version1,
+		ID:     fmt.Sprintf("cli-%d", time.Now().UnixNano()),
+		Method: rpc.MethodGmailCreateDraft,
+		Params: params,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := rpc.Call(ctx, socketPath, req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if jsonOut {
+		return printJSONResponse(resp)
+	}
+	if !resp.OK {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", resp.Error.Code, resp.Error.Message)
+		return 1
+	}
+
+	var result rpc.GmailCreateDraftResult
+	if err := decodeResult(resp.Result, &result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	printDraftSummary(os.Stdout, result.Draft)
+	return 0
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			*f = append(*f, part)
+		}
+	}
+	return nil
+}
+
+func readBodyFlag(body, bodyFile string) (string, bool) {
+	bodyFile = strings.TrimSpace(bodyFile)
+	if body != "" && bodyFile != "" {
+		fmt.Fprintln(os.Stderr, "set only one of --body or --body-file")
+		return "", false
+	}
+	if bodyFile == "" {
+		return body, true
+	}
+	var data []byte
+	var err error
+	if bodyFile == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(bodyFile)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return "", false
+	}
+	return string(data), true
+}
+
 func exitCode(resp rpc.Response) int {
 	if resp.OK {
 		return 0
@@ -732,6 +920,16 @@ func printLabelInfo(w io.Writer, label rpc.LabelInfo) {
 	fmt.Fprintf(w, "threads_unread\t%d\n", label.ThreadsUnread)
 }
 
+func printDraftSummary(w io.Writer, draft rpc.DraftSummary) {
+	fmt.Fprintf(w, "draft_id\t%s\n", draft.DraftID)
+	fmt.Fprintf(w, "message_id\t%s\n", draft.MessageID)
+	fmt.Fprintf(w, "thread_id\t%s\n", draft.ThreadID)
+	fmt.Fprintf(w, "to\t%s\n", strings.Join(draft.To, ","))
+	fmt.Fprintf(w, "cc\t%s\n", strings.Join(draft.Cc, ","))
+	fmt.Fprintf(w, "bcc\t%s\n", strings.Join(draft.Bcc, ","))
+	fmt.Fprintf(w, "subject\t%s\n", draft.Subject)
+}
+
 func printCommandUsage(w io.Writer, command, note string, fs *flag.FlagSet) {
 	fmt.Fprintf(w, "Usage:\n  %s\n", command)
 	if strings.TrimSpace(note) != "" {
@@ -800,6 +998,8 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock thread search [--limit N] [--page-token TOKEN] <query>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock thread get [--bodies] <thread-id>")
 	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock attachment get [--output PATH] <message-id> <attachment-id>")
+	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock drafts create --to EMAIL [--subject SUBJECT] [--body TEXT | --body-file PATH]")
+	fmt.Fprintln(w, "  safe-gmail --socket /path/to.sock drafts reply (--message-id ID | --thread-id ID) [--all] [--body TEXT | --body-file PATH]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Notes:")
 	fmt.Fprintln(w, "  search queries use Gmail query syntax.")
@@ -811,5 +1011,6 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  get always prints attachment lines with attachment_id values when attachments are visible.")
 	fmt.Fprintln(w, "  search without --body or --attachments does not include attachment_id values.")
 	fmt.Fprintln(w, "  attachment get writes raw bytes to stdout unless you pass --output PATH.")
+	fmt.Fprintln(w, "  drafts create and drafts reply create Gmail drafts only; safe-gmail does not expose sending.")
 	fmt.Fprintln(w, "  Prefer --json for machine-readable automation.")
 }
